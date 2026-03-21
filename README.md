@@ -690,13 +690,13 @@
 
     <!-- Footer -->
     <footer class="footer">
-        <p>&copy; 2025 Heoster - Codeex AI Company. All rights reserved.</p>
+        <p>&copy; 2026 Heoster - Codeex AI Company. All rights reserved.</p>
         <p style="margin-top: 0.5rem; color: #666;">
             "Your intelligent, loyal, and capable AI companion"
         </p>
         <p style="margin-top: 1rem; font-size: 0.9rem; color: #888;">
             Licensed under MIT License | Built with ❤️ by Codeex AI Company | 
-            <a href="https://github.com/Heoster/jarvis-2.0-enterprise" target="_blank" style="color: #00d4ff; text-decoration: none;">
+            <a href="https://github.com/Heoster/jarvis-2.0" target="_blank" style="color: #00d4ff; text-decoration: none;">
                 <i class="fab fa-github"></i> Open Source on GitHub
             </a>
         </p>
