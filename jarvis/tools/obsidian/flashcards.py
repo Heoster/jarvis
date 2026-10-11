@@ -125,7 +125,8 @@ def cards_from_text(note_rel: str, body: str) -> List[Card]:
             index, hidden = match.group(1), match.group(2)
             if not hidden.strip():
                 continue
-            masked = CLOZE_RE.sub(lambda m: "[…]" if m.group(1) == index else m.group(0), line)
+            masked = CLOZE_RE.sub(
+                lambda m, current=index: "[…]" if m.group(1) == current else m.group(0), line)
             masked = CLOZE_RE.sub(lambda m: m.group(2), masked)
             question = re.sub(r"\s+", " ", masked).strip(" -#*>")
             cards.append(Card(id=card_id(note_rel, f"{question}|{hidden}"), note=note_rel,
@@ -278,7 +279,7 @@ class SrsStore:
                 setattr(card, key, record[key])
         return card
 
-    def update(self, card: Card) -> Card:
+    def update(self, card: Card, grade: str = "") -> Card:
         self._data.setdefault("cards", {})[card.id] = {
             "note": card.note, "question": card.question[:120], "due": card.due,
             "interval": card.interval, "ease": card.ease, "reps": card.reps,
@@ -290,6 +291,13 @@ class SrsStore:
         if today not in days:
             days.append(today)
             self._data["streak_days"] = days[-400:]
+        if grade:
+            # a small append-only history: lets the study coach measure retention
+            # over a window ("how much of what I revised this month stuck?")
+            log = self._data.setdefault("log", [])
+            log.append({"d": card.last or today, "id": card.id, "g": grade.lower(),
+                        "n": card.note, "q": card.question[:60]})
+            self._data["log"] = log[-2000:]
         self.save()
         return card
 

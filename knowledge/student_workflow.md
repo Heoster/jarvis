@@ -27,6 +27,9 @@ lecture / chapter  →  notes in Obsidian  →  flashcards  →  daily revision 
    the master plan in `04 Exams`.
 5. **Track** — *"how many days left for boards?"* → `obsidian_exams`; the study
    report shows streak, due cards and per-subject progress.
+6. **Get pushed** — `python -m jarvis coach watch --at 19:30` writes the brief into
+   today's daily note every evening, notifies you, and on Sundays leaves a review
+   note with your retention table. You no longer have to remember to ask.
 
 ## Card syntax JARVIS writes (and reads)
 
@@ -75,11 +78,36 @@ inserted into the note or turned into cards.
 The plugin talks only to `127.0.0.1` (`python -m jarvis serve`), so nothing leaves
 the machine unless a cloud provider was configured.
 
-## Recommended free plugins
+## Recommended free plugins — installed for you
 
 Dataview · Spaced Repetition · Tasks · Calendar · Templater · Git · Excalidraw ·
-Kanban · Admonition · Syntax Highlight. `python -m jarvis obsidian plugins`
-explains what each one buys you.
+Kanban · Admonition · Syntax Highlight. JARVIS installs their **prebuilt release
+bundles** itself (the same files Obsidian's store would use — nothing is compiled
+on your machine):
+
+```bash
+python -m jarvis obsidian plugins --install-prebuilt all
+python -m jarvis obsidian plugins --install-prebuilt "dataview, tasks, spaced"
+python -m jarvis obsidian plugins --update           # keep them current
+```
+
+Each install is verified (sha256 when the release publishes one) and recorded in
+`.jarvis-provenance.json`. For a fully offline setup, run
+`python scripts/fetch_prebuilt_plugins.py` once with internet, then add
+`--offline` to every install.
+
+## What the coach measures
+
+```
+python -m jarvis coach weak
+  Physics · Optics — 4 lapse(s) in 4 review(s) (0% retention), 4 due
+  Maths · Limits   — 0 lapse(s) in 1 review(s) (100% retention)
+```
+
+Weakness = lapses + low ease + how overdue + cards stuck in learning + subjects
+that went quiet. It is computed from the review log JARVIS keeps, so grading
+cards honestly is what makes the advice good. `jarvis coach brief` turns it into
+"do this now"; `--write` puts it in the day's note.
 
 ## Habits that make it stick
 
@@ -90,3 +118,5 @@ explains what each one buys you.
 - Keep `#revision` on notes you want resurfacing; JARVIS pulls them into the queue.
 - End every session with a daily-note line: *"add 'revised optics, weak in
   numericals' to today's study log"*.
+- Let the coach nag you: `coach watch --at 19:30` is the difference between
+  having a revision system and using one.

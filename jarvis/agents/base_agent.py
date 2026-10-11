@@ -77,7 +77,8 @@ class BaseAgent:
         self.config = dict(config or {})
         self.brain = brain or Brain(self.config)
         self.memory = memory or get_memory_manager(self.config)
-        self.registry = registry or getattr(self.brain, "registry", None) or ToolRegistry()
+        self.registry = (registry or getattr(self.brain, "tool_registry", None)
+                        or ToolRegistry())
         if not self.registry.get_all_tools():
             self.registry.load_all_default_tools(self.config, verbose=False)
 

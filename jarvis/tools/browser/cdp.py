@@ -81,6 +81,7 @@ class CDPClient:
         self._ws: Any = None
         self._message_id = 0
         self._target_id: str = ""
+        self._pinned_id: str = ""      # tab chosen with switch_to()
 
     # ── HTTP layer ─────────────────────────────────────────────────────────
     def version(self) -> Dict[str, Any]:
@@ -108,11 +109,33 @@ class CDPClient:
         pages = self.targets()
         if not pages:
             return None
-        # prefer a real page (not about:blank) and the most recently focused
+        # an explicitly selected target wins over the heuristic
+        pinned = getattr(self, "_pinned_id", "")
+        if pinned:
+            for target in pages:
+                if target.id == pinned or target.id.startswith(pinned):
+                    return target
+        # otherwise prefer a real page (not about:blank)
         for target in pages:
             if target.url and target.url not in ("about:blank", "chrome://newtab/"):
                 return target
         return pages[0]
+
+    def switch_to(self, target: "CDPTarget") -> bool:
+        """Make ``target`` the tab later commands act on."""
+        self._pinned_id = target.id
+        if self._ws is not None:            # reconnect the websocket to it
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+            self._target_id = target.id
+            return self.connect(target)
+        return True
+
+    def close_target(self, target_id: str) -> bool:
+        return self.close_tab(target_id)
 
     def new_tab(self, url: str = "about:blank") -> Optional[CDPTarget]:
         import httpx

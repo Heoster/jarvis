@@ -1,5 +1,10 @@
 # JARVIS
 
+[![CI](https://github.com/heostertech-cyber/jarvis/actions/workflows/ci.yml/badge.svg)](https://github.com/heostertech-cyber/jarvis/actions/workflows/ci.yml)
+[![CD · release](https://github.com/heostertech-cyber/jarvis/actions/workflows/cd-release.yml/badge.svg)](https://github.com/heostertech-cyber/jarvis/actions/workflows/cd-release.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/heostertech-cyber/jarvis)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](pyproject.toml)
+
 **Just A Rather Very Intelligent System** — a free-tier, single-user AI operator built for **Heoster** (Harsh Saini · CODEEX-AI).
 
 JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, keeps a smart memory of you, drives a real Chrome window (by DOM **and** by moving the actual cursor), controls the desktop through OCR rather than a vision model, chains six LLM providers with automatic verified failover, and exposes everything through a CLI and an OpenAI-compatible local API.
@@ -29,13 +34,16 @@ JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, kee
 - [CLI reference](#cli-reference)
 - [Local API server](#local-api-server)
 - [Obsidian & student mode](#obsidian--student-mode)
-- [Tools (116)](#tools-116)
+- [The system prompt (what the model is actually told)](#the-system-prompt-what-the-model-is-actually-told)
+- [Play a song (URL injection, verification, memory)](#play-a-song-url-injection-verification-memory)
+- [Tools (123)](#tools-123)
 - [Agents](#agents)
 - [Architecture](#architecture)
 - [Free-tier limits](#free-tier-limits)
 - [Configuration](#configuration)
 - [Troubleshooting / doctor](#troubleshooting--doctor)
 - [Tests](#tests)
+- [CI / CD on GitHub](#ci--cd-on-github)
 - [Project layout](#project-layout)
 
 ---
@@ -49,7 +57,7 @@ JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, kee
 | Vision model | **None, by design.** Screen understanding is OCR + DOM, never a VLM |
 | LLM chain | ollama → groq → cerebras → openrouter → gemini → hf → stub (auto-failover, verified) |
 | Browser chain | playwright → selenium → cdp (terminal-launched Chrome) → screen control |
-| Tools | **116**, in 10 categories, all schema-validated |
+| Tools | **123**, in 10 categories, all schema-validated |
 | Memory | short-term window + episodic / semantic / procedural long-term tiers, hybrid recall |
 | Study | Obsidian vault tools with spaced repetition **and** a JARVIS plugin for Obsidian |
 | Interfaces | CLI (`python -m jarvis`), interactive chat, OpenAI-compatible HTTP server |
@@ -249,6 +257,7 @@ browser     Chrome harness: engines, terminal launch, fallback verification
 screen      Screen control: capabilities, screenshots, OCR, click-by-text
 memory      Inspect the smart memory manager (stats/consolidate/search)
 obsidian    Vault notes, flashcards, revision queue, exams, study plans, plugins
+coach       Study coach: daily brief, weak-topic analytics, weekly reviews
 quota       Free-tier usage per provider (--reset PROVIDER)
 serve       Run the local API server (OpenAI-compatible)
 search      Web search through the provider fallback chain
@@ -273,7 +282,7 @@ python -m jarvis serve --host 127.0.0.1 --port 8077
 | --- | --- |
 | `GET /health` | liveness |
 | `GET /status` | brain, memory, tools, quota |
-| `GET /tools` | all 116 tools with categories |
+| `GET /tools` | all 123 tools with categories |
 | `POST /ask` | `{"message": "..."}` → answer + provider + memory trace |
 | `POST /tool` | `{"name": "calculate", "args": {...}}` → raw tool result |
 | `POST /read` | `{"url": "..."}` → crawl chain shortcut |
@@ -312,6 +321,34 @@ python -m jarvis obsidian status              # vault, due cards, exams, streak
 | **Grade** | `obsidian_flashcards_review(grade="good")` | SM-2 reschedules (again/hard/good/easy), streak tracked |
 | **Plan** | `obsidian_study_plan(exam_date="2027-03-01")` | chapters spread over the days left, targets written into each daily note |
 | **Track** | `obsidian_exams`, `obsidian_study_report` | days left, per-subject progress, open tasks |
+| **Coach** | `jarvis coach watch --at 19:30` | pushes the brief to you instead of waiting to be asked |
+| **Diagnose** | `obsidian_weak_topics`, `jarvis coach weak` | which topics you actually keep forgetting |
+
+### The study coach — it asks you, not the other way round
+
+Every review is logged, so JARVIS can measure what is actually sticking:
+
+```bash
+python -m jarvis coach                 # next brief time, retention, weakest topics
+python -m jarvis coach weak --limit 5  # "Physics · Optics — 4 lapses in 4 reviews (0%)"
+python -m jarvis coach brief           # what to do right now (markdown / --json)
+python -m jarvis coach brief --write   # …and drop it into today's daily note
+python -m jarvis coach weekly          # retention table + next week's focus note
+python -m jarvis coach watch --at 19:30            # sit in the background and push it
+python -m jarvis coach watch --at 07:00,19:30 --speak   # …and read the headline aloud
+```
+
+The brief is written under `### JARVIS brief` in the daily note — refreshed in
+place, never duplicated — and lands next to the planner's *Target for today*
+block. It contains: cards due (⚠ marks ones you have lapsed on), overdue tasks,
+the weakest subject/topic with its retention %, exam countdowns, streaks, and a
+one-line headline (`5 card(s) due — weakest: Physics / Optics (0% retention)`).
+`watch` sleeps until each scheduled time (notify desktop · speak aloud · write a
+weekly review on Sundays) and keeps a running log.
+
+**Weakness** is not vibes: it combines lapses, low ease, how overdue a card is,
+cards stuck in `learning`, and topics that have gone quiet for
+`obsidian.coach.stale_days`. All of it comes from files already in the vault.
 
 ### Card formats (Obsidian-Spaced-Repetition compatible)
 
@@ -334,6 +371,35 @@ JSON file (`data/obsidian_srs.json`) — reviews are never lost, and the communi
 formula sheet, exam plan, daily note, weekly review) · `JARVIS Home.md` dashboard.
 Nothing existing is overwritten, and re-running it creates nothing twice.
 
+### Prebuilt community plugins, installed for you
+
+The free plugins a student actually wants — **Dataview, Spaced Repetition, Tasks,
+Calendar, Templater, Git, Excalidraw, Kanban, Admonition, Syntax Highlight** —
+can be dropped straight into the vault. JARVIS fetches the same release files
+Obsidian's community store would install (`main.js`, `manifest.json`,
+`styles.css`), so there is **no npm, no bundler and no build step**:
+
+```bash
+python -m jarvis obsidian plugins --list-prebuilt            # the catalogue + state
+python -m jarvis obsidian plugins --install-prebuilt all     # download + enable
+python -m jarvis obsidian plugins --install-prebuilt "dataview, tasks, spaced"
+python -m jarvis obsidian plugins --update                   # newest releases
+python -m jarvis obsidian plugins --list-prebuilt --checked  # what has an update
+python -m jarvis obsidian plugins --install-prebuilt all --offline   # no network
+```
+
+Installs are not a black box: when a release publishes a sha256 digest it must
+match before anything is written, and every plugin folder gets a
+`.jarvis-provenance.json` (repo, tag, asset URLs, per-file hashes, timestamp). A
+download that fails falls back to a vendored bundle when one exists.
+
+**Offline installs.** Run `python scripts/fetch_prebuilt_plugins.py` once on a
+machine with internet and every bundle is vendored under
+`obsidian-plugin/prebuilt/<plugin-id>/` with `SHA256SUMS` and `ATTRIBUTION.md`;
+after that `--offline` works with no network at all (each project keeps its own
+licence — see the attribution file). The chat model can do the same thing by
+calling the `obsidian_plugins` tool with `action="install-prebuilt"`.
+
 ### The JARVIS plugin for Obsidian
 
 `obsidian-plugin/jarvis/` is a real community plugin — plain CommonJS, no bundler,
@@ -353,7 +419,57 @@ note or turned into cards. A status-bar dot shows whether the server is reachabl
 Nothing is sent anywhere except `127.0.0.1` (plus whichever LLM provider you
 configured) — the plugin has no account, no telemetry, no cloud.
 
-## Tools (116)
+## The system prompt (what the model is actually told)
+
+Every turn, `Brain.system_prompt()` builds one universal prompt from live facts
+(`jarvis/core/system_prompt.py`). Sections, in priority order:
+
+1. **identity + operator** — who JARVIS is, who Heoster is, language/timezone.
+2. **RUNTIME** — OS, Python, provider chain, bound model, tool counts, search/browser chains.
+3. **HOW YOU RESPOND** — short, direct, tools for facts, no invented results.
+4. **TOOL PROTOCOL** — call by exact name with JSON args, `ok=false` is information,
+   one call at a time when the next step depends on the previous result, act → verify → answer.
+5. **MEMORY** — recalled memory/knowledge below is true; look before asking; store
+   preferences, deadlines and decisions.
+6. **WORKFLOWS** / **PLAYBOOKS** — the exact recipes, e.g. how to play a song or drive a browser.
+7. **HARD RULES** — never invent a tool result/file/URL/number; confirm before anything
+   destructive or public; free tiers only.
+
+Context blocks (RECALLED MEMORY · KNOWLEDGE BASE · SESSION CONTEXT) are appended when
+they fit. The whole thing is budgeted: as the ceiling drops it drops knowledge, then
+memories, then session context, then workflow detail — and always still contains the
+tool protocol, memory rules, hard rules and a one-line workflow index. See it verbatim:
+
+```bash
+python -m jarvis prompt                                  # the real prompt, live facts
+python -m jarvis prompt --budget 3000 --memory "favourite song: Kesariya"
+python -m jarvis prompt --out prompt.txt                 # save it
+```
+
+`brain.system_prompt: universal|persona` in `config.yaml` switches it (the older
+hand-written persona prompt is still available); `brain.system_prompt_budget` sets the
+character ceiling (default 12000).
+
+## Play a song (URL injection, verification, memory)
+
+```bash
+python -m jarvis tool media_play '{"query":"kesariya arijit singh"}'
+python -m jarvis tool media_play '{}'                    # replay the last song
+python -m jarvis tool media_play '{}' --json             # with query "my favourite song"
+python -m jarvis tool media_history '{"day":"yesterday"}'
+python -m jarvis tool media_favourite '{"song":"Kesariya – Arijit Singh"}'
+python -m jarvis tool page_tabs '{}'                     # or page_tab_switch / page_tab_close
+```
+
+The flow, exactly: launch Chrome → **new tab** → inject the YouTube search URL (no
+typing into the site) → score the results by keyword overlap (official/lyrics up,
+reactions/remixes/short clips down) → open the best match in its own tab → **verify**
+whether it is playing, paused (autoplay blocked) or ended → press `k`, then
+`video.play()` if still paused → confirm again → record the play with the date,
+channel and query in `data/media_history.json` (and mirror it to long-term memory).
+
+
+## Tools (123)
 
 | Category | Count | Highlights |
 | --- | --- | --- |
@@ -366,7 +482,7 @@ configured) — the plugin has no account, no telemetry, no cloud.
 | crawl | 8 | `read_url` (chain), `read_many`, `crawl_tools_report`, `jina_read_url`, `local_read_url`, `firecrawl_scrape/crawl/map` |
 | search | 8 | `search_web` (chain), `parallel_search`, `search_news`, `search_providers`, `tavily_search`, `tavily_answer`, `serper_search`, `searxng_search` |
 | memory | 5 | `remember`, `recall`, `search_memory`, `forget`, `memory_stats` |
-| obsidian | 16 | `obsidian_search/read/write`, `obsidian_daily_note`, `obsidian_tasks`, `obsidian_flashcards_add/due/review`, `obsidian_revision_queue`, `obsidian_study_kit`, `obsidian_study_plan`, `obsidian_exams`, `obsidian_plugins` |
+| obsidian | 18 | `obsidian_search/read/write`, `obsidian_daily_note`, `obsidian_tasks`, `obsidian_flashcards_add/due/review`, `obsidian_revision_queue`, `obsidian_study_brief`, `obsidian_weak_topics`, `obsidian_study_kit`, `obsidian_study_plan`, `obsidian_exams`, `obsidian_plugins` |
 
 Every tool has a validated JSON schema (`python -m jarvis tools spec calculate` shows it), a timeout, and returns `ToolResult(ok, content, data, error, elapsed_ms, artifacts)`. Blocked and destructive operations return `ok=false` with the reason — never a silent success.
 
@@ -411,7 +527,7 @@ Routing is keyword-scored with structural signals (a URL + "open" → browser; "
                    │                    │
         ┌──────────▼─────────┐   ┌──────▼────────────┐
         │ API Manager        │   │  Tool Registry    │
-        │ health·quota·retry │   │  116 tools / 10   │
+        │ health·quota·retry │   │  123 tools / 10   │
         │ verified failover  │   │  categories       │
         └──────────┬─────────┘   └──────┬────────────┘
                    │                    │
@@ -426,7 +542,7 @@ Routing is keyword-scored with structural signals (a URL + "open" → browser; "
 ```
 
 - **Context manager** keeps the prompt inside a 14 000-token budget: it merges system blocks, shrinks tool results, compacts old turns into a running summary, and guarantees the newest user turn always survives.
-- **Tool selection** scores every tool against the request (category + name + docstring overlap with regex boosts for maths, dates and URLs), so a small local model gets ≤ 9 relevant tools instead of all 116.
+- **Tool selection** scores every tool against the request (category + name + docstring overlap with regex boosts for maths, dates and URLs), so a small local model gets ≤ 9 relevant tools instead of all 123.
 - **Everything is inspectable**: `jarvis status`, `jarvis doctor`, `TurnResult.context_line`, `memory.budget_report()`.
 
 ---
@@ -502,7 +618,7 @@ Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_T
 ## Tests
 
 ```bash
-python -m pytest tests/ -q          # 109 tests, no network, no model needed
+python -m pytest tests/ -q          # 179 tests, no network, no model needed
 ```
 
 | File | Covers |
@@ -512,11 +628,43 @@ python -m pytest tests/ -q          # 109 tests, no network, no model needed
 | `tests/test_browser_screen.py` | DOM parsing, selectors, screen-point mapping, harness chain, cursor maths |
 | `tests/test_memory.py` | importance gate, dedupe, decay, consolidation, recall budget, skills, sessions |
 | `tests/test_agent_flow.py` | orchestrator turns, tool selection, agent routing, API surface, CLI wiring |
-| `tests/test_obsidian.py` | vault parsing, search, daily notes, flashcards + SM-2, study kit/plan, plugin install |
+| `tests/test_obsidian.py` | vault parsing, search, daily notes, flashcards + SM-2, study kit/plan, plugin install, prebuilt bundles (local HTTP server, digest checks, offline fallback) |
+| `tests/test_coach.py` | retention analytics, the daily brief, idempotent daily-note writes, the scheduler (injected clock), review logging, PyYAML-free frontmatter |
 
 Everything is hermetic: a temporary config, a temporary home, blanked API keys, the stub provider.
 
 ---
+
+## CI / CD on GitHub
+
+Three workflows live in `.github/workflows/` and need no secrets beyond the
+automatic `GITHUB_TOKEN`:
+
+| Workflow | Trigger | Does |
+| --- | --- | --- |
+| `ci.yml` · CI | push to `main`/`arena/**`, every PR, manual | **lint** (compileall + a narrow ruff gate on real bugs + advisory full report), **tests** on Python 3.10/3.11/3.12, an advisory **Windows** run (where the screen tools actually run), a CLI smoke, and **package** (builds the wheel/sdist, installs it into a clean venv and runs it) |
+| `cd-release.yml` · CD · release | a `v*` tag, or manual | re-runs the suite, builds the wheel + sdist + `jarvis-obsidian-plugin.zip`, installs the wheel clean, then publishes a GitHub Release with generated notes and every asset attached |
+| `cd-website.yml` · CD · website | manual, or a `site-*` tag | publishes `docs/website` to GitHub Pages |
+
+Cut a release:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1        # → the Release appears with artefacts attached
+```
+
+One-time setup for the website: **Settings → Pages → Build and deployment →
+Source: GitHub Actions**, then run *CD · website* from the Actions tab. It is
+manual on purpose so an unconfigured Pages setup can never turn `main` red.
+
+Run the same gates locally before pushing:
+
+```bash
+python -m compileall -q jarvis
+ruff check --select F821,F822,F811,F823,F841,B023,B904,E713,E9 .
+python -m pytest tests/ -q
+python -m jarvis doctor && python -m jarvis prompt --budget 3000
+```
 
 ## Project layout
 
@@ -541,16 +689,17 @@ jarvis/
 ├── config.py        layered config + .env + JARVIS__ overrides
 └── version.py       name, version, banner
 obsidian-plugin/      JARVIS for Obsidian (plain-JS community plugin, no build step)
+  └── prebuilt/       offline cache of community plugin bundles (see its README)
 knowledge/            operator profile, command reference, student workflow
 scripts/             setup, chrome harness, Xvfb, doctor, wrapper
-tests/               109 hermetic tests
+tests/               179 hermetic tests
 ```
 
 ---
 
 ## Status & limits
 
-- **Verified here**: 109/109 tests, CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
+- **Verified here**: 179/179 tests, CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
 - **Needs hardware to verify**: real Chrome engines, cursor movement and OCR — this sandbox has no browser binary, no `DISPLAY` and no `xdotool`. The harness reports *precisely* what is missing rather than failing silently, and `browser --verify --deep` performs the same check on your machine.
 - **Not implemented on purpose**: any paid API, any vision model, any telemetry. JARVIS sends data nowhere except the providers and readers you configure.
 

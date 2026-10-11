@@ -110,9 +110,6 @@ class MemoryRecord:
             last_accessed=float(record.last_accessed or time.time()),
         )
 
-    def age_days(self) -> float:
-        return max(0.0, (time.time() - self.created_at) / 86_400)
-
 
 def _make_id(content: str, tier: MemoryTier) -> str:
     digest = hashlib.blake2b(f"{tier.value}:{content}".encode("utf-8"),

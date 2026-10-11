@@ -7,6 +7,7 @@ machine, because a vault is only a folder of markdown files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, timedelta
 from pathlib import Path
@@ -292,6 +293,244 @@ def test_plugin_javascript_is_at_least_syntactically_valid():
     assert check.returncode == 0, check.stderr
 
 
+# ── prebuilt community plugins ────────────────────────────────────────────
+def test_prebuilt_catalogue_covers_the_recommended_plugins():
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    ids = [plugin.id for plugin in prebuilt_module.PREBUILT_PLUGINS]
+    assert ids == [row[0] for row in study_module.RECOMMENDED_PLUGINS]
+    assert len(ids) == len(set(ids)) >= 10
+    for plugin in prebuilt_module.PREBUILT_PLUGINS:
+        assert plugin.repo.count("/") == 1, plugin.id
+        assert plugin.why and plugin.name
+    assert prebuilt_module.find_prebuilt("tasks").id == "obsidian-tasks-plugin"
+    assert prebuilt_module.find_prebuilt("spaced").id == "obsidian-spaced-repetition"
+    assert prebuilt_module.find_prebuilt("nope") is None
+    chosen, unknown = prebuilt_module.resolve_selection("dataview, Tasks, nope")
+    assert [plugin.id for plugin in chosen] == ["dataview", "obsidian-tasks-plugin"]
+    assert unknown == ["nope"]
+    assert len(prebuilt_module.resolve_selection("all")[0]) == len(ids)
+
+
+def _fake_bundle(folder: Path, plugin_id: str, *, version: str = "9.9.9") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "manifest.json").write_text(json.dumps(
+        {"id": plugin_id, "name": plugin_id.title(), "version": version,
+         "minAppVersion": "1.0.0"}), encoding="utf-8")
+    (folder / "main.js").write_text("// prebuilt bundle for tests\n", encoding="utf-8")
+    return folder
+
+
+def test_install_prebuilt_uses_a_vendored_bundle_offline(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    vendor = tmp_path / "prebuilt"
+    _fake_bundle(vendor / "dataview", "dataview")
+    plugin = prebuilt_module.find_prebuilt("dataview")
+
+    result = prebuilt_module.install_prebuilt(vault, [plugin], offline=True,
+                                              vendored_root_path=vendor)
+    assert result["ok"] and not result["failed"]
+    item = result["installed"][0]
+    assert item["source"] == "vendored" and item["enabled"] is True
+
+    folder = vault / ".obsidian" / "plugins" / "dataview"
+    assert (folder / "main.js").is_file() and (folder / "manifest.json").is_file()
+    provenance = json.loads((folder / prebuilt_module.PROVENANCE_FILE).read_text())
+    assert provenance["repo"] == "blacksmithgu/obsidian-dataview"
+    assert provenance["sha256"]["main.js"] == hashlib.sha256(
+        (folder / "main.js").read_bytes()).hexdigest()
+    assert "dataview" in json.loads(
+        (vault / ".obsidian" / "community-plugins.json").read_text())
+    assert prebuilt_module.enabled_prebuilt_ids(vault) == ["dataview"]
+
+
+def test_install_prebuilt_offline_without_a_bundle_fails_cleanly(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    plugin = prebuilt_module.find_prebuilt("kanban")
+    result = prebuilt_module.install_prebuilt(vault, [plugin], offline=True,
+                                              vendored_root_path=tmp_path / "empty")
+    assert result["ok"] is False
+    assert result["failed"] and "no vendored bundle" in result["failed"][0]["error"]
+    assert not (vault / ".obsidian" / "plugins" / "obsidian-kanban").exists()
+    assert not (vault / ".obsidian" / "community-plugins.json").exists()
+
+
+def _serve_release(plugin, files, *, digest="auto", tamper=False):
+    """A tiny GitHub stand-in: /repos/<repo>/releases/latest + /dl/<file>."""
+    import http.server
+    import threading
+
+    assets = []
+    payload_files = {}
+    for name, data in files.items():
+        digest_value = ""
+        if digest == "auto":
+            digest_value = "sha256:" + hashlib.sha256(data).hexdigest()
+        elif digest:
+            digest_value = digest
+        if tamper and name == "main.js":
+            digest_value = "sha256:" + "0" * 64
+        assets.append({"name": name, "size": len(data), "digest": digest_value,
+                       "browser_download_url": f"BASE/dl/{name}"})
+    release = {"tag_name": "1.2.3", "published_at": "2026-01-01T00:00:00Z",
+               "assets": assets}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):                              # noqa: N802
+            if self.path == f"/repos/{plugin.repo}/releases/latest":
+                body = json.dumps(release).replace("BASE", f"http://127.0.0.1:{port}")
+                self._send(body.encode(), "application/json")
+            elif self.path.startswith("/dl/"):
+                name = self.path.split("/dl/", 1)[1]
+                if name in payload_files:
+                    self._send(payload_files[name], "application/octet-stream")
+                else:
+                    self.send_error(404)
+            else:
+                self.send_error(404)
+
+        def _send(self, body: bytes, content_type: str) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):                 # keep the test output clean
+            pass
+
+    payload_files.update(files)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{port}"
+
+
+def test_install_prebuilt_downloads_and_verifies_the_release(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    plugin = prebuilt_module.find_prebuilt("templater")
+    files = {"manifest.json": json.dumps({"id": "templater-obsidian", "version": "2.0.0",
+                                          "name": "Templater"}).encode(),
+             "main.js": b"// downloaded bundle\n" * 32,
+             "styles.css": b".templater { color: red; }\n"}
+    server, base = _serve_release(plugin, files)
+    try:
+        result = prebuilt_module.install_prebuilt(vault, [plugin], api_base=base,
+                                                  vendored_root_path=tmp_path / "none")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["ok"] and not result["failed"], result
+    item = result["installed"][0]
+    assert item["source"] == "github-release" and item["tag"] == "1.2.3"
+    folder = vault / ".obsidian" / "plugins" / "templater-obsidian"
+    assert (folder / "main.js").read_bytes() == files["main.js"]
+    assert (folder / "styles.css").read_bytes() == files["styles.css"]
+    provenance = json.loads((folder / prebuilt_module.PROVENANCE_FILE).read_text())
+    assert provenance["urls"]["main.js"].endswith("/dl/main.js")
+    assert provenance["sha256"]["main.js"] == hashlib.sha256(files["main.js"]).hexdigest()
+    # the vault lists it as installed even though the folder name differs from the name
+    installed = {plugin.id: plugin for plugin in study_module.installed_plugins(vault)}
+    assert installed["templater-obsidian"].enabled
+
+
+def test_install_prebuilt_refuses_a_tampered_download(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    plugin = prebuilt_module.find_prebuilt("dataview")
+    files = {"manifest.json": json.dumps({"id": "dataview", "version": "1.0.0"}).encode(),
+             "main.js": b"// tampered\n"}
+    server, base = _serve_release(plugin, files, tamper=True)
+    try:
+        result = prebuilt_module.install_prebuilt(vault, [plugin], api_base=base,
+                                                  vendored_root_path=tmp_path / "none")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result["ok"] is False
+    assert "sha256 mismatch" in result["failed"][0]["error"]
+    assert not (vault / ".obsidian" / "plugins" / "dataview").exists()
+    assert not list((vault / ".obsidian" / "plugins").glob(".dataview-*"))
+
+
+def test_install_prebuilt_falls_back_to_the_vendored_bundle(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    vendor = tmp_path / "prebuilt"
+    _fake_bundle(vendor / "obsidian-kanban", "obsidian-kanban", version="2.0.51")
+    plugin = prebuilt_module.find_prebuilt("kanban")
+    # nothing is listening on that port → the download fails, the bundle saves the day
+    result = prebuilt_module.install_prebuilt(vault, [plugin], api_base="http://127.0.0.1:1",
+                                              vendored_root_path=vendor, timeout=2)
+    assert result["ok"], result
+    item = result["installed"][0]
+    assert item["source"] == "vendored" and "vendored bundle" in item.get("warning", "")
+
+
+def test_release_without_a_bundle_is_reported_honestly(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    plugin = prebuilt_module.find_prebuilt("syntax")
+    files = {"manifest.json": b"{}"}          # no main.js published
+    server, base = _serve_release(plugin, files)
+    try:
+        result = prebuilt_module.install_prebuilt(vault, [plugin], api_base=base,
+                                                  vendored_root_path=tmp_path / "none")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result["ok"] is False
+    assert "no prebuilt bundle" in result["failed"][0]["error"]
+
+
+def test_prebuilt_status_and_description(vault, tmp_path):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+
+    vendor = tmp_path / "prebuilt"
+    _fake_bundle(vendor / "dataview", "dataview")
+    prebuilt_module.install_prebuilt(vault, [prebuilt_module.find_prebuilt("dataview")],
+                                     vendored_root_path=vendor)
+    rows = prebuilt_module.prebuilt_status(vault, vendored_root_path=vendor)
+    dataview = next(row for row in rows if row["id"] == "dataview")
+    assert dataview["installed"] and dataview["enabled"] and dataview["vendored"]
+    assert dataview["version"] == "9.9.9"
+    canvas = next(row for row in rows if row["id"] == "obsidian-kanban")
+    assert not canvas["installed"] and canvas["repo"] == "mgmeyers/obsidian-kanban"
+    text = prebuilt_module.describe_prebuilt(rows)
+    assert "Dataview" in text and "not installed" in text
+
+
+def test_obsidian_plugins_tool_lists_and_installs_prebuilt(vault, tmp_path, monkeypatch):
+    from jarvis.tools.obsidian import prebuilt as prebuilt_module
+    from jarvis.tools.obsidian.tools import obsidian_plugins as plugin_tool
+
+    vendor = tmp_path / "prebuilt"
+    _fake_bundle(vendor / "dataview", "dataview")
+    monkeypatch.setattr(prebuilt_module, "vendored_root", lambda: vendor)
+
+    result = plugin_tool.invoke({"action": "status"})
+    assert result.ok, result.error
+    assert "Prebuilt community plugins" in result.content and "Dataview" in result.content
+
+    result = plugin_tool.invoke({"action": "install-prebuilt", "plugins": "dataview",
+                                 "offline": True})
+    assert result.ok, result.error
+    assert "Dataview v9.9.9" in result.content and "enabled" in result.content
+    assert (vault / ".obsidian" / "plugins" / "dataview" / "main.js").is_file()
+
+    result = plugin_tool.invoke({"action": "install-prebuilt", "plugins": "nonsense"})
+    assert result.ok is False and "no matching plugin" in result.error
+
+    result = plugin_tool.invoke({"action": "teleport"})
+    assert result.ok is False and "unknown action" in result.error
+
+
 # ── tool layer ────────────────────────────────────────────────────────────
 def test_obsidian_tools_are_registered(registry):
     names = {tool.name for tool in registry.get_by_category("obsidian")}
@@ -329,7 +568,7 @@ def test_tools_work_through_the_registry(registry, vault):
     assert status.ok and "Vault" in status.content
 
     report = registry.execute_sync("obsidian_plugins", {})
-    assert report.ok and "Recommended" in report.content
+    assert report.ok and "Prebuilt community plugins" in report.content
 
 
 def test_missing_vault_fails_with_guidance(registry, monkeypatch, home):

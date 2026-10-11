@@ -126,7 +126,6 @@ def test_agent_factory_routes_requests(config):
 def test_every_specialist_has_a_bounded_toolbox(config):
     from jarvis.agents.specialists import AGENT_CLASSES
 
-    factory = None
     for name, agent_cls in AGENT_CLASSES.items():
         assert agent_cls.spec.categories or agent_cls.spec.tools, name
         assert agent_cls.spec.max_iterations <= 10, name
@@ -209,7 +208,6 @@ def test_study_agent_routes_and_has_vault_tools(config):
 
     assert "study" in AGENT_CLASSES
     decision = "make flashcards from my physics notes"
-    factory = None
     from jarvis.agents.agent_factory import AgentFactory
 
     routed = AgentFactory(config).route(decision)
