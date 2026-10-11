@@ -1,0 +1,12 @@
+{
+  "knowledge/heoster.md": {
+    "hash": "ad6319d847cbab90fc79b028",
+    "chunks": 3,
+    "ingested_at": "2026-10-11T04:15:00.173510+00:00"
+  },
+  "knowledge/jarvis_commands.md": {
+    "hash": "2133939fe6f5fc286ae17b39",
+    "chunks": 3,
+    "ingested_at": "2026-10-11T04:15:00.190888+00:00"
+  }
+}

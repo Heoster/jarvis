@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-operator"
+version = "1.0.0"
+description = "JARVIS — the personal AI operator built for Heoster (screen, browser and memory first)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Heoster (Harsh Saini)", email = "codeex.care@gmail.com" }]
+keywords = ["ai", "agent", "automation", "browser", "screen-control", "memory", "free-tier"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+  "pyyaml>=6.0",
+  "httpx>=0.27",
+  "rich>=13.0",
+  "click>=8.1",
+]
+
+[project.optional-dependencies]
+screen = ["mss>=9.0", "Pillow>=10.0", "pytesseract>=0.3.10", "pyautogui>=0.9.54"]
+browser = ["playwright>=1.44", "selenium>=4.20", "websockets>=12.0"]
+read = ["trafilatura>=1.8", "beautifulsoup4>=4.12"]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "gradio>=4.31"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+full = [
+  "mss>=9.0", "Pillow>=10.0", "pytesseract>=0.3.10", "pyautogui>=0.9.54",
+  "playwright>=1.44", "selenium>=4.20", "websockets>=12.0",
+  "trafilatura>=1.8", "beautifulsoup4>=4.12", "tiktoken>=0.7",
+]
+
+[project.scripts]
+jarvis = "jarvis.interfaces.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Heoster"
+Repository = "https://github.com/Heoster/jarvis"
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+# Async tests are written with asyncio.run(...) so pytest-asyncio stays optional.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]

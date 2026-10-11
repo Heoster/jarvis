@@ -1,877 +1,478 @@
+# JARVIS
+
+**Just A Rather Very Intelligent System** — a free-tier, single-user AI operator built for **Heoster** (Harsh Saini · CODEEX-AI).
+
+JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, keeps a smart memory of you, drives a real Chrome window (by DOM **and** by moving the actual cursor), controls the desktop through OCR rather than a vision model, chains six LLM providers with automatic verified failover, and exposes everything through a CLI and an OpenAI-compatible local API.
+
+```
+     ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗
+     ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝
+     ██║███████║██████╔╝██║   ██║██║███████╗
+██   ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║
+╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║
+ ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝
+        JARVIS v1.0.0 · built for Heoster (CODEEX-AI) · free-tier only
+```
+
+---
+
+## Table of contents
+
+- [What it is](#what-it-is)
+- [The three focus areas](#the-three-focus-areas)
+  - [1 · Screen control (no vision model)](#1--screen-control-no-vision-model)
+  - [2 · Browser control (real Chrome, real cursor)](#2--browser-control-real-chrome-real-cursor)
+  - [3 · Smart memory](#3--smart-memory)
+- [API manager: verified automatic fallback](#api-manager-verified-automatic-fallback)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [CLI reference](#cli-reference)
+- [Local API server](#local-api-server)
+- [Tools (100)](#tools-100)
+- [Agents](#agents)
+- [Architecture](#architecture)
+- [Free-tier limits](#free-tier-limits)
+- [Configuration](#configuration)
+- [Troubleshooting / doctor](#troubleshooting--doctor)
+- [Tests](#tests)
+- [Project layout](#project-layout)
+
+---
+
+## What it is
+
+| Property | Value |
+| --- | --- |
+| Operator | **Heoster** — Harsh Saini, founder of CODEEX-AI, Khatauli (Muzaffarnagar), India |
+| Cost policy | **Free tiers only.** No paid API, no metered service, no credit card |
+| Vision model | **None, by design.** Screen understanding is OCR + DOM, never a VLM |
+| LLM chain | ollama → groq → cerebras → openrouter → gemini → hf → stub (auto-failover, verified) |
+| Browser chain | playwright → selenium → cdp (terminal-launched Chrome) → screen control |
+| Tools | **100**, in 9 categories, all schema-validated |
+| Memory | short-term window + episodic / semantic / procedural long-term tiers, hybrid recall |
+| Interfaces | CLI (`python -m jarvis`), interactive chat, OpenAI-compatible HTTP server |
+
+Everything works **offline-first**: with no API keys and no local model, JARVIS still browses, clicks, types, reads the screen, searches its memory, manages files, and answers arithmetic — it just says so honestly instead of hallucinating.
+
+---
+
+## The three focus areas
+
+### 1 · Screen control (no vision model)
+
+JARVIS never sends a screenshot to a model. Screen understanding is a two-step, fully local pipeline:
+
+```
+screenshot  ──►  tesseract OCR (local binary)  ──►  words + confidence + boxes
+                                                        │
+                            fuzzy match ≥ 0.8 ──────────┘
+                                     │
+                          scale  ──►  real cursor click
+```
+
+- **Input backends** (auto-detected, first that works wins):
+  `pyautogui` → `xdotool` → `ydotool` → PowerShell (Windows) → AppleScript (macOS) → `NullBackend` (reports *why* instead of pretending).
+- **Real cursor movement**: Bezier-curved paths with eased timing (`min(120, distance × 0.18)` bow, `t²(3−2t)` easing, ±0.8 px jitter, ~16 ms steps) — moves look human, not teleported.
+- **Click by text**: `screen_click_text("Sign in")` → OCR → match → scaled coordinates → cursor click, and it reports the exact pixel it used.
+- **Windows**: list, focus, maximise/minimise/close via `wmctrl`/`xdotool`/PowerShell/osascript.
+- **Capability honesty**: on a headless box every screen tool returns `ok=false` with the exact install command (`Xvfb`, `xdotool`, `tesseract-ocr`) — it never silently fails.
+
+Key tools: `take_desktop_screenshot`, `read_screen_text`, `find_on_screen`, `screen_click_text`, `screen_fill_field`, `cursor_move`, `cursor_click`, `keyboard_type`, `keyboard_press`, `screen_scroll`, `screen_list_windows`, `screen_focus_window`, `launch_application`, `run_in_terminal_window`.
+
+### 2 · Browser control (real Chrome, real cursor)
+
+The user's requirement was explicit: **launch Chrome from the terminal, then drive it by screen control with cursor movement, typing and browser commands — in real time, harness-style.** JARVIS implements that literally, with a hybrid that uses the DOM for *targeting* and the OS cursor for *acting*.
+
+```
+BrowserHarness
+ ├─ playwright   full DOM + JS + headless or headed
+ ├─ selenium     full DOM, classic WebDriver
+ ├─ cdp          talks to a Chrome YOU launched from the terminal (port 9222)
+ └─ screen       OCR + cursor only (works on any window, even one you opened)
+```
+
+- **Terminal launch first**: `scripts/chrome-harness.sh` starts Chrome with `--remote-debugging-port=9222`, a real window, and your profile. JARVIS's `browser_launch` tool does the same from Python and remembers the process.
+- **Hybrid clicking**: `browse_open` renders the page as a numbered menu — `[7] <a> "Lofi Girl"` — the model picks an index, JARVIS resolves it to a CSS selector, asks the engine for the element's viewport box, converts that box to **screen coordinates** (window position + toolbar height + `devicePixelRatio`), and then moves the real cursor and clicks. If the box is unavailable it falls back to a DOM click, and if no engine is alive it falls back to OCR + coordinate search.
+- **Verification built in**: `verify(deep=True)` starts each engine in turn and reports *exactly* what is missing (`pip install playwright && playwright install chromium`), so "the browser is broken" is never a mystery.
+- **Detection resistance**: because the click physically happens at OS level on a real, visible window, sites that fingerprint synthetic events see a human.
+
+Key tools: `browse_open`, `page_read`, `page_click`, `page_type`, `page_press`, `page_scroll`, `page_back`, `page_forward`, `page_tabs`, `page_screenshot`, `page_js`, `page_find`, `browser_launch`, `browser_engines`, `browser_status`, `screenshot_page`, `screenshot_and_read`.
+
+### 3 · Smart memory
 
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JARVIS AI - Your Personal AI Assistant</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Roboto', sans-serif;
-            background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%);
-            color: #ffffff;
-            overflow-x: hidden;
-        }
-
-        /* Animated Background */
-        .bg-animation {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            opacity: 0.1;
-        }
-
-        .bg-animation::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 L 0 0 0 10" fill="none" stroke="%23ffffff" stroke-width="0.5"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
-            animation: gridMove 20s linear infinite;
-        }
-
-        @keyframes gridMove {
-            0% { transform: translate(0, 0); }
-            100% { transform: translate(10px, 10px); }
-        }
-
-        /* Header */
-        .header {
-            position: fixed;
-            top: 0;
-            width: 100%;
-            background: rgba(0, 0, 0, 0.9);
-            backdrop-filter: blur(10px);
-            z-index: 1000;
-            padding: 1rem 0;
-            transition: all 0.3s ease;
-        }
-
-        .nav {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 2rem;
-        }
-
-        .logo {
-            font-family: 'Orbitron', monospace;
-            font-size: 1.8rem;
-            font-weight: 900;
-            color: #00d4ff;
-            text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
-        }
-
-        .nav-links {
-            display: flex;
-            list-style: none;
-            gap: 2rem;
-        }
-
-        .nav-links a {
-            color: #ffffff;
-            text-decoration: none;
-            transition: color 0.3s ease;
-            font-weight: 500;
-        }
-
-        .nav-links a:hover {
-            color: #00d4ff;
-            text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
-        }
-
-        /* Hero Section */
-        .hero {
-            height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .hero-content {
-            max-width: 800px;
-            z-index: 2;
-        }
-
-        .hero h1 {
-            font-family: 'Orbitron', monospace;
-            font-size: 4rem;
-            font-weight: 900;
-            margin-bottom: 1rem;
-            background: linear-gradient(45deg, #00d4ff, #ffffff, #00d4ff);
-            background-size: 200% 200%;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            animation: gradientShift 3s ease-in-out infinite;
-        }
-
-        @keyframes gradientShift {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-        }
-
-        .hero-subtitle {
-            font-size: 1.5rem;
-            margin-bottom: 2rem;
-            color: #b0b0b0;
-            animation: fadeInUp 1s ease-out 0.5s both;
-        }
-
-        .hero-description {
-            font-size: 1.2rem;
-            margin-bottom: 3rem;
-            line-height: 1.6;
-            animation: fadeInUp 1s ease-out 1s both;
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .cta-button {
-            display: inline-block;
-            padding: 1rem 2rem;
-            background: linear-gradient(45deg, #00d4ff, #0099cc);
-            color: #ffffff;
-            text-decoration: none;
-            border-radius: 50px;
-            font-weight: 700;
-            font-size: 1.1rem;
-            transition: all 0.3s ease;
-            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.3);
-            animation: pulse 2s infinite;
-        }
-
-        .cta-button:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 20px 40px rgba(0, 212, 255, 0.5);
-        }
-
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-        }
-
-        /* Floating Elements */
-        .floating-element {
-            position: absolute;
-            opacity: 0.1;
-            animation: float 6s ease-in-out infinite;
-        }
-
-        .floating-element:nth-child(1) {
-            top: 20%;
-            left: 10%;
-            animation-delay: 0s;
-        }
-
-        .floating-element:nth-child(2) {
-            top: 60%;
-            right: 10%;
-            animation-delay: 2s;
-        }
-
-        .floating-element:nth-child(3) {
-            bottom: 20%;
-            left: 20%;
-            animation-delay: 4s;
-        }
-
-        @keyframes float {
-            0%, 100% { transform: translateY(0px) rotate(0deg); }
-            50% { transform: translateY(-20px) rotate(180deg); }
-        }
-
-        /* Sections */
-        .section {
-            padding: 5rem 0;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding-left: 2rem;
-            padding-right: 2rem;
-        }
-
-        .section h2 {
-            font-family: 'Orbitron', monospace;
-            font-size: 2.5rem;
-            text-align: center;
-            margin-bottom: 3rem;
-            color: #00d4ff;
-            text-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
-        }
-
-        /* Features Grid */
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 2rem;
-            margin-top: 3rem;
-        }
-
-        .feature-card {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 20px;
-            padding: 2rem;
-            text-align: center;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .feature-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.1), transparent);
-            transition: left 0.5s ease;
-        }
-
-        .feature-card:hover::before {
-            left: 100%;
-        }
-
-        .feature-card:hover {
-            transform: translateY(-10px);
-            box-shadow: 0 20px 40px rgba(0, 212, 255, 0.2);
-            border-color: rgba(0, 212, 255, 0.3);
-        }
-
-        .feature-icon {
-            font-size: 3rem;
-            color: #00d4ff;
-            margin-bottom: 1rem;
-            display: block;
-        }
-
-        .feature-card h3 {
-            font-size: 1.5rem;
-            margin-bottom: 1rem;
-            color: #ffffff;
-        }
-
-        .feature-card p {
-            color: #b0b0b0;
-            line-height: 1.6;
-        }
-
-        /* Stats Section */
-        .stats {
-            background: rgba(0, 0, 0, 0.3);
-            padding: 3rem 0;
-            margin: 3rem 0;
-            border-radius: 20px;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 2rem;
-            text-align: center;
-        }
-
-        .stat-item {
-            padding: 1rem;
-        }
-
-        .stat-number {
-            font-family: 'Orbitron', monospace;
-            font-size: 2.5rem;
-            font-weight: 900;
-            color: #00d4ff;
-            display: block;
-            margin-bottom: 0.5rem;
-        }
-
-        .stat-label {
-            color: #b0b0b0;
-            font-size: 1rem;
-        }
-
-        /* Installation Section */
-        .installation {
-            background: rgba(0, 0, 0, 0.5);
-            border-radius: 20px;
-            padding: 3rem;
-            margin: 3rem 0;
-        }
-
-        .code-block {
-            background: #000000;
-            border: 1px solid #333333;
-            border-radius: 10px;
-            padding: 1.5rem;
-            margin: 1rem 0;
-            font-family: 'Courier New', monospace;
-            color: #00ff00;
-            overflow-x: auto;
-            position: relative;
-        }
-
-        .code-block::before {
-            content: '$ ';
-            color: #00d4ff;
-        }
-
-        /* Contact Section */
-        .contact {
-            text-align: center;
-            background: linear-gradient(45deg, rgba(0, 212, 255, 0.1), rgba(0, 153, 204, 0.1));
-            border-radius: 20px;
-            padding: 3rem;
-            margin: 3rem 0;
-        }
-
-        .contact-links {
-            display: flex;
-            justify-content: center;
-            gap: 2rem;
-            margin-top: 2rem;
-            flex-wrap: wrap;
-        }
-
-        .contact-link {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 1rem 2rem;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 50px;
-            text-decoration: none;
-            color: #ffffff;
-            transition: all 0.3s ease;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .contact-link:hover {
-            background: rgba(0, 212, 255, 0.2);
-            transform: translateY(-5px);
-            box-shadow: 0 10px 20px rgba(0, 212, 255, 0.3);
-        }
-
-        /* Footer */
-        .footer {
-            text-align: center;
-            padding: 2rem;
-            background: rgba(0, 0, 0, 0.8);
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        /* Responsive Design */
-        @media (max-width: 768px) {
-            .hero h1 {
-                font-size: 2.5rem;
-            }
-
-            .hero-subtitle {
-                font-size: 1.2rem;
-            }
-
-            .nav-links {
-                display: none;
-            }
-
-            .section {
-                padding-left: 1rem;
-                padding-right: 1rem;
-            }
-
-            .contact-links {
-                flex-direction: column;
-                align-items: center;
-            }
-        }
-
-        /* Scroll Animations */
-        .fade-in {
-            opacity: 0;
-            transform: translateY(30px);
-            transition: all 0.6s ease;
-        }
-
-        .fade-in.visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        /* Loading Animation */
-        .loading {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: #0c0c0c;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 9999;
-            transition: opacity 0.5s ease;
-        }
-
-        .loading.hidden {
-            opacity: 0;
-            pointer-events: none;
-        }
-
-        .loader {
-            width: 50px;
-            height: 50px;
-            border: 3px solid rgba(0, 212, 255, 0.3);
-            border-top: 3px solid #00d4ff;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body>
-    <!-- Loading Screen -->
-    <div class="loading" id="loading">
-        <div class="loader"></div>
-    </div>
-
-    <!-- Animated Background -->
-    <div class="bg-animation"></div>
-
-    <!-- Header -->
-    <header class="header">
-        <nav class="nav">
-            <div class="logo">JARVIS AI</div>
-            <ul class="nav-links">
-                <li><a href="#home">Home</a></li>
-                <li><a href="#features">Features</a></li>
-                <li><a href="#installation">Installation</a></li>
-                <li><a href="#contact">Contact</a></li>
-                <li><a href="https://github.com/Heoster/jarvis-2.0-enterprise" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
-            </ul>
-        </nav>
-    </header>
-
-    <!-- Hero Section -->
-    <section id="home" class="hero">
-        <div class="floating-element">
-            <i class="fas fa-robot" style="font-size: 4rem;"></i>
-        </div>
-        <div class="floating-element">
-            <i class="fas fa-brain" style="font-size: 3rem;"></i>
-        </div>
-        <div class="floating-element">
-            <i class="fas fa-microchip" style="font-size: 3.5rem;"></i>
-        </div>
-        
-        <div class="hero-content">
-            <h1>JARVIS AI</h1>
-            <p class="hero-subtitle">Your Personal AI Assistant</p>
-            <p class="hero-description">
-                Meet Jarvis - Heoster's sophisticated personal AI assistant, developed by Codeex AI Company. 
-                A complete intelligent system powered by advanced AI with Transformers, LangChain, 
-                real-time web capabilities, and magical learning features.
-            </p>
-            <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
-                <a href="#installation" class="cta-button">
-                    <i class="fas fa-download"></i> Get Started Now
-                </a>
-                <a href="https://github.com/Heoster/jarvis-2.0-enterprise" target="_blank" class="cta-button" style="background: linear-gradient(45deg, #333333, #555555);">
-                    <i class="fab fa-github"></i> View on GitHub
-                </a>
-            </div>
-        </div>
-    </section>
-
-    <!-- Features Section -->
-    <section id="features" class="section fade-in">
-        <h2>🌟 Core Capabilities</h2>
-        
-        <div class="features-grid">
-            <div class="feature-card">
-                <i class="fas fa-brain feature-icon"></i>
-                <h3>AI Intelligence</h3>
-                <p>Advanced NLP with spaCy, NLTK, Transformers for deep understanding. 95%+ accuracy with enhanced routing and sentiment analysis.</p>
-            </div>
-            
-            <div class="feature-card">
-                <i class="fas fa-globe feature-icon"></i>
-                <h3>Real-Time Data</h3>
-                <p>Web search via DuckDuckGo, live weather & news, Indian APIs for Bitcoin prices in INR, railway info, and mutual funds.</p>
-            </div>
-            
-            <div class="feature-card">
-                <i class="fas fa-graduation-cap feature-icon"></i>
-                <h3>Student Features</h3>
-                <p>Grammar correction, interactive quizzes for Python/Math/Minecraft, comprehensive knowledge base, and progress tracking.</p>
-            </div>
-            
-            <div class="feature-card">
-                <i class="fas fa-masks-theater feature-icon"></i>
-                <h3>Dual Personality</h3>
-                <p>Professional Jarvis mode (sophisticated, loyal) and Magical Codeex mode (warm, encouraging learning companion).</p>
-            </div>
-            
-            <div class="feature-card">
-                <i class="fas fa-shield-alt feature-icon"></i>
-                <h3>Privacy First</h3>
-                <p>All processing happens locally by default. No telemetry, encrypted storage, granular permissions, complete transparency.</p>
-            </div>
-            
-            <div class="feature-card">
-                <i class="fas fa-flag feature-icon"></i>
-                <h3>Indian Focus</h3>
-                <p>Specialized for Indian users with local finance data, railway information, and geographical context for Muzaffarnagar, UP.</p>
-            </div>
-        </div>
-    </section>
-
-    <!-- Stats Section -->
-    <section class="section fade-in">
-        <div class="stats">
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <span class="stat-number">50+</span>
-                    <span class="stat-label">Python Modules</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-number">25+</span>
-                    <span class="stat-label">Major Features</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-number">15+</span>
-                    <span class="stat-label">API Endpoints</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-number">95%</span>
-                    <span class="stat-label">Completion Rate</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-number">100+</span>
-                    <span class="stat-label">Test Cases</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-number">15K+</span>
-                    <span class="stat-label">Lines of Code</span>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Installation Section -->
-    <section id="installation" class="section fade-in">
-        <h2>⚡ Quick Installation</h2>
-        
-        <div class="installation">
-            <h3 style="color: #00d4ff; margin-bottom: 2rem;">Get running in 30 seconds!</h3>
-            
-            <h4 style="color: #ffffff; margin: 1.5rem 0 1rem 0;">1. Clone Repository</h4>
-            <div class="code-block">git clone https://github.com/Heoster/jarvis-2.0-enterprise.git</div>
-            <div class="code-block">cd jarvis-2.0-enterprise</div>
-            
-            <h4 style="color: #ffffff; margin: 1.5rem 0 1rem 0;">2. Install Dependencies</h4>
-            <div class="code-block">pip install -r requirements.txt</div>
-            <div class="code-block">python -m spacy download en_core_web_sm</div>
-            <div class="code-block">python scripts/init_db.py</div>
-            
-            <h4 style="color: #ffffff; margin: 1.5rem 0 1rem 0;">3. Start Jarvis</h4>
-            <div class="code-block">python -m core.main start</div>
-            
-            <h4 style="color: #ffffff; margin: 1.5rem 0 1rem 0;">4. Chat!</h4>
-            <div class="code-block" style="color: #ffffff;">
-                You: Hello Jarvis<br>
-                Jarvis: Good morning, Heoster. Jarvis at your service. Systems are online and ready.
-            </div>
-            
-            <div style="margin-top: 2rem; padding: 1rem; background: rgba(0, 212, 255, 0.1); border-radius: 10px; border-left: 4px solid #00d4ff;">
-                <strong>💡 Pro Tip:</strong> Most features work without any API keys! Optional enhancements available for weather, news, and advanced AI features.
-            </div>
-        </div>
-    </section>
-
-    <!-- Usage Examples -->
-    <section class="section fade-in">
-        <h2>💬 Example Interactions</h2>
-        
-        <div class="features-grid">
-            <div class="feature-card">
-                <h3>🤖 Personal Assistant</h3>
-                <div class="code-block" style="text-align: left; font-size: 0.9rem;">
-                    <span style="color: #00d4ff;">You:</span> Hello Jarvis<br>
-                    <span style="color: #00ff00;">Jarvis:</span> Good morning, Heoster. Jarvis at your service.<br><br>
-                    <span style="color: #00d4ff;">You:</span> What's the Bitcoin price in INR?<br>
-                    <span style="color: #00ff00;">Jarvis:</span> Current Bitcoin Price: ₹2,847,350.25 (+2.3% today)
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <h3>🎓 Student Learning</h3>
-                <div class="code-block" style="text-align: left; font-size: 0.9rem;">
-                    <span style="color: #00d4ff;">You:</span> Can you correct "hlo how r u"?<br>
-                    <span style="color: #00ff00;">Jarvis:</span> 🪄 Codeex's Grammar Magic ✨<br>
-                    📝 You said: hlo how r u<br>
-                    ✅ Codeex suggests: Hello, how are you?
-                </div>
-            </div>
-            
-            <div class="feature-card">
-                <h3>🌐 Web Intelligence</h3>
-                <div class="code-block" style="text-align: left; font-size: 0.9rem;">
-                    <span style="color: #00d4ff;">You:</span> Search for Python tutorials<br>
-                    <span style="color: #00ff00;">Jarvis:</span> [Automatically searches DuckDuckGo]<br>
-                    I found several excellent resources:<br>
-                    1. Real Python - Comprehensive Guide...
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Contact Section -->
-    <section id="contact" class="section fade-in">
-        <div class="contact">
-            <h2>📞 Get in Touch</h2>
-            <p style="font-size: 1.2rem; margin-bottom: 2rem; color: #b0b0b0;">
-                Have questions? Need support? Want to collaborate? We'd love to hear from you!
-            </p>
-            
-            <div class="contact-links">
-                <a href="mailto:codeex.care@gmail.com" class="contact-link">
-                    <i class="fas fa-envelope"></i>
-                    codeex.care@gmail.com
-                </a>
-                <a href="https://instagram.com/codeex._.heoster" target="_blank" class="contact-link">
-                    <i class="fab fa-instagram"></i>
-                    @codeex._.heoster
-                </a>
-                <a href="https://github.com/Heoster/jarvis-2.0-enterprise" target="_blank" class="contact-link">
-                    <i class="fab fa-github"></i>
-                    GitHub Repository
-                </a>
-            </div>
-            
-            <div style="margin-top: 3rem; padding: 2rem; background: rgba(0, 0, 0, 0.3); border-radius: 15px;">
-                <h3 style="color: #00d4ff; margin-bottom: 1rem;">🏢 About Codeex AI Company</h3>
-                <p style="color: #b0b0b0; line-height: 1.6;">
-                    Codeex AI specializes in developing personalized AI assistants that combine 
-                    cutting-edge technology with human-centered design. Our mission is to make AI 
-                    accessible, intelligent, and genuinely helpful for everyone.
-                </p>
-            </div>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="footer">
-        <p>&copy; 2026 Heoster - Codeex AI Company. All rights reserved.</p>
-        <p style="margin-top: 0.5rem; color: #666;">
-            "Your intelligent, loyal, and capable AI companion"
-        </p>
-        <p style="margin-top: 1rem; font-size: 0.9rem; color: #888;">
-            Licensed under MIT License | Built with ❤️ by Codeex AI Company | 
-            <a href="https://github.com/Heoster/jarvis-2.0" target="_blank" style="color: #00d4ff; text-decoration: none;">
-                <i class="fab fa-github"></i> Open Source on GitHub
-            </a>
-        </p>
-    </footer>
-
-    <script>
-        // Loading Screen
-        window.addEventListener('load', function() {
-            setTimeout(() => {
-                document.getElementById('loading').classList.add('hidden');
-            }, 1000);
-        });
-
-        // Smooth Scrolling
-        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-            anchor.addEventListener('click', function (e) {
-                e.preventDefault();
-                const target = document.querySelector(this.getAttribute('href'));
-                if (target) {
-                    target.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'start'
-                    });
-                }
-            });
-        });
-
-        // Scroll Animations
-        const observerOptions = {
-            threshold: 0.1,
-            rootMargin: '0px 0px -50px 0px'
-        };
-
-        const observer = new IntersectionObserver(function(entries) {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.classList.add('visible');
-                }
-            });
-        }, observerOptions);
-
-        document.querySelectorAll('.fade-in').forEach(el => {
-            observer.observe(el);
-        });
-
-        // Header Background on Scroll
-        window.addEventListener('scroll', function() {
-            const header = document.querySelector('.header');
-            if (window.scrollY > 100) {
-                header.style.background = 'rgba(0, 0, 0, 0.95)';
-            } else {
-                header.style.background = 'rgba(0, 0, 0, 0.9)';
-            }
-        });
-
-        // Animated Counter for Stats
-        function animateCounters() {
-            const counters = document.querySelectorAll('.stat-number');
-            counters.forEach(counter => {
-                const target = counter.textContent;
-                const isPercentage = target.includes('%');
-                const isPlus = target.includes('+');
-                const isK = target.includes('K');
-                
-                let numericTarget = parseInt(target.replace(/[^\d]/g, ''));
-                if (isK) numericTarget *= 1000;
-                
-                let current = 0;
-                const increment = numericTarget / 50;
-                
-                const timer = setInterval(() => {
-                    current += increment;
-                    if (current >= numericTarget) {
-                        current = numericTarget;
-                        clearInterval(timer);
-                    }
-                    
-                    let displayValue = Math.floor(current);
-                    if (isK && displayValue >= 1000) {
-                        displayValue = Math.floor(displayValue / 1000) + 'K';
-                    }
-                    if (isPlus) displayValue += '+';
-                    if (isPercentage) displayValue += '%';
-                    
-                    counter.textContent = displayValue;
-                }, 50);
-            });
-        }
-
-        // Trigger counter animation when stats section is visible
-        const statsObserver = new IntersectionObserver(function(entries) {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    animateCounters();
-                    statsObserver.unobserve(entry.target);
-                }
-            });
-        }, { threshold: 0.5 });
-
-        const statsSection = document.querySelector('.stats');
-        if (statsSection) {
-            statsObserver.observe(statsSection);
-        }
-
-        // Typing Effect for Hero
-        function typeWriter(element, text, speed = 50) {
-            let i = 0;
-            element.innerHTML = '';
-            
-            function type() {
-                if (i < text.length) {
-                    element.innerHTML += text.charAt(i);
-                    i++;
-                    setTimeout(type, speed);
-                }
-            }
-            type();
-        }
-
-        // Initialize typing effect after loading
-        setTimeout(() => {
-            const heroSubtitle = document.querySelector('.hero-subtitle');
-            if (heroSubtitle) {
-                const originalText = heroSubtitle.textContent;
-                typeWriter(heroSubtitle, originalText, 100);
-            }
-        }, 2000);
-
-        // Particle Effect (Simple)
-        function createParticle() {
-            const particle = document.createElement('div');
-            particle.style.cssText = `
-                position: fixed;
-                width: 2px;
-                height: 2px;
-                background: #00d4ff;
-                pointer-events: none;
-                z-index: 1;
-                border-radius: 50%;
-                opacity: 0.7;
-            `;
-            
-            particle.style.left = Math.random() * window.innerWidth + 'px';
-            particle.style.top = window.innerHeight + 'px';
-            
-            document.body.appendChild(particle);
-            
-            const animation = particle.animate([
-                { transform: 'translateY(0px)', opacity: 0.7 },
-                { transform: `translateY(-${window.innerHeight + 100}px)`, opacity: 0 }
-            ], {
-                duration: Math.random() * 3000 + 2000,
-                easing: 'linear'
-            });
-            
-            animation.onfinish = () => particle.remove();
-        }
-
-        // Create particles periodically
-        setInterval(createParticle, 300);
-
-        // Console Easter Egg
-        console.log(`
-        ╔══════════════════════════════════════╗
-        ║            JARVIS AI v1.0            ║
-        ║     Developed by Codeex AI Company   ║
-        ║                                      ║
-        ║  "Good day, sir. Jarvis at your      ║
-        ║   service. Systems are online        ║
-        ║   and ready."                        ║
-        ║                                      ║
-        ║  Contact: codeex.care@gmail.com      ║
-        ║  Instagram: @codeex._.heoster        ║
-        ╚══════════════════════════════════════╝
-        `);
-    </script>
-</body>
-</html>
+A fixed sliding window is the *floor*, not the design. JARVIS keeps four tiers and decides, per turn, what deserves to persist:
+
+| Tier | Holds | Lifetime |
+| --- | --- | --- |
+| **Working** | the live conversation (24 messages) + rolling summary of evicted turns | session |
+| **Episodic** | *what happened* — turns, tool runs, agent results | decayed, promoted when reused |
+| **Semantic** | *what is true* — facts about Heoster, preferences, project state | long, deduped |
+| **Procedural** | *how to do it* — learned tool sequences (skills) | strongest, reused |
+
+- **Importance gate** — every candidate is scored (explicit "remember" 0.9, corrections 0.85, preferences 0.75, tool failures 0.6, chatter 0.05). Below the threshold (`memory.importance_threshold`, default 0.35) it is **dropped**, so the store does not fill with "hmm" and "ok".
+- **Near-duplicate merge** — a new fact within cosine 0.90 of an existing one bumps the old record instead of adding a twin.
+- **Decay & promotion** — unused low-importance records fade (45-day half-life) and are pruned; records that get recalled are promoted (episodic → semantic) and their importance rises.
+- **Hybrid recall** — 0.65 × vector similarity (hashing TF-IDF locally, `nomic-embed-text` when ollama is up) + 0.35 × BM25 keyword match, with a token budget so recall can never blow the context window.
+- **Consolidation** — every 25 turns (and on `/memory consolidate`) JARVIS promotes, decays, prunes and summarizes.
+- **Skills** — successful browser/screen traces are stored as reusable procedures and offered back as hints (`skills.hints_for("open youtube and play lofi")`).
+- **Heoster profile** — seeded from `jarvis/persona.py`, extended automatically: preferences, corrections, personal details and tool preferences are extracted from what you say, and injected into every system prompt.
+
+Storage is a single SQLite file (`memory_store/vectors.sqlite3`, WAL mode, float32 vectors + an inverted index for BM25). No server, no Docker, no RAM footprint. ChromaDB is optional if you want it.
+
+---
+
+## API manager: verified automatic fallback
+
+`jarvis/core/api_manager.py` is the reason JARVIS keeps answering when a free tier dies.
+
+- **Chain**: `ollama → groq → cerebras → openrouter → gemini → hf → stub`, reorderable, always ending in a provider that cannot fail.
+- **Health checks**: each provider has a cheap `probe()` (model list / ping). Results are cached for 90 s with latency recorded.
+- **Backoff**: a provider that errors is marked `degraded`/`down` with exponential backoff (2 s → 120 s) instead of being hammered.
+- **Quota integration**: every call passes the free-tier quota manager (rpm / rpd / monthly credits per provider) *before* the request, so JARVIS never burns a free tier it needs later.
+- **Verified fallback** — this is the part that is easy to get wrong and JARVIS gets right:
+  1. the turn's failed provider is recorded,
+  2. the next provider is *actually called* (not assumed healthy),
+  3. the answer records `provider`, `fallback_from` and `degraded: true`,
+  4. a background **auto-heal** thread re-probes failed providers every 120 s and returns them to the chain once they recover,
+  5. `jarvis api --verify` forces a live probe of every provider and prints latency + status, and `recent_fallbacks()` exposes the audit trail.
+- **Honest last resort**: the `stub` provider never pretends to reason. It performs the *obvious* tool call (arithmetic, time, URL, search), returns raw results, and tells Heoster how to get a real model — including the exact `ollama pull` command.
+
+```
+$ python -m jarvis api --verify
+  provider     status        latency   note
+  ollama       down          -         connection refused (start `ollama serve`)
+  groq         unconfigured  -         no API key (set GROQ_API_KEY)
+  ...
+  stub         healthy       0 ms      unlimited
+  fallback chain : ollama → groq → cerebras → openrouter → gemini → hf → stub
+  would answer   : stub
+```
+
+---
+
+## Install
+
+Requires **Python 3.10+** and ~200 MB of disk. Works on Windows, Linux and macOS; a 2-core / 4 GB machine is enough.
+
+```bash
+git clone https://github.com/Heoster/jarvis.git
+cd jarvis
+
+# one-shot: venv + core deps + focus-area extras + browser + optional model
+bash scripts/jarvis-setup.sh
+
+# or manually
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+pip install playwright selenium websockets mss Pillow pytesseract trafilatura beautifulsoup4
+playwright install chromium
+```
+
+Then check the machine and doctor the install:
+
+```bash
+python -m jarvis doctor          # hardware, screen, browser, memory, API, crawl
+```
+
+Nothing above is mandatory beyond the core three (`pyyaml`, `httpx`, `rich`, `click`). Every optional piece degrades to a clear message instead of a crash.
+
+Headless server? Give it a virtual display:
+
+```bash
+bash scripts/start-xvfb.sh          # Xvfb :99 + xdotool + tesseract hints
+```
+
+---
+
+## Quick start
+
+```bash
+# interactive chat (resumes your last session, remembers everything)
+python -m jarvis
+
+# one-shot question
+python -m jarvis ask "What is 21 * 2 + 8?"
+
+# launch Chrome from the terminal, then drive it by DOM + cursor
+bash scripts/chrome-harness.sh              # port 9222, real window, your profile
+python -m jarvis ask "open youtube, search for lofi beats and click the first video"
+
+# screen control with no vision model
+python -m jarvis screen --read              # OCR the current screen
+python -m jarvis ask "click the button that says Sign in"
+
+# what do you know about me?
+python -m jarvis profile
+
+# local OpenAI-compatible API
+python -m jarvis serve --port 8077
+```
+
+Inside `jarvis chat` you also get slash commands:
+
+| Command | Effect |
+| --- | --- |
+| `/help` | full slash-command list |
+| `/status` `/health` | brain, memory, tools, quota |
+| `/tools [category]` | what JARVIS can do right now |
+| `/memory [stats\|consolidate\|search q]` | inspect or maintain memory |
+| `/profile` | everything learned about Heoster |
+| `/skills` | learned procedures |
+| `/agents` `/agent <name> <task>` | list / delegate to specialists |
+| `/model` `/api` `/quota` | provider chain, health, free-tier usage |
+| `/browser` `/screen` | focus-area status |
+| `/compress` | summarise the context now |
+| `/report` `/time` `/clear` `/exit` | misc |
+
+---
+
+## CLI reference
+
+```
+python -m jarvis [--version] COMMAND [ARGS]
+
+chat        Interactive conversation (default)
+ask         Ask one question and exit
+doctor      Machine + capability report, with exact fix commands
+tools       List tools, optionally filtered by category
+api         Provider chain, health, latency, free-tier quota (--verify for live probes)
+browser     Chrome harness: engines, terminal launch, fallback verification
+screen      Screen control: capabilities, screenshots, OCR, click-by-text
+memory      Inspect the smart memory manager (stats/consolidate/search)
+quota       Free-tier usage per provider (--reset PROVIDER)
+serve       Run the local API server (OpenAI-compatible)
+search      Web search through the provider fallback chain
+read        Read a URL through the crawl fallback chain
+agents      List specialist sub-agents
+delegate    Hand a task to one specialist
+profile     Show what JARVIS knows about Heoster
+```
+
+---
+
+## Local API server
+
+OpenAI-compatible, stdlib-only by default (FastAPI + uvicorn if installed):
+
+```bash
+python -m jarvis serve --host 127.0.0.1 --port 8077
+# or: uvicorn-style via JARVIS_API_HOST / JARVIS_API_PORT / JARVIS_API_TOKEN
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | liveness |
+| `GET /status` | brain, memory, tools, quota |
+| `GET /tools` | all 100 tools with categories |
+| `POST /ask` | `{"message": "..."}` → answer + provider + memory trace |
+| `POST /tool` | `{"name": "calculate", "args": {...}}` → raw tool result |
+| `POST /read` | `{"url": "..."}` → crawl chain shortcut |
+| `POST /search` | `{"query": "..."}` → search chain shortcut |
+| `POST /v1/chat/completions` | drop-in OpenAI shape, adds a `jarvis` metadata block |
+
+```bash
+curl -s localhost:8077/ask -H 'content-type: application/json' \
+     -d '{"message":"What is 21 * 2 + 8?"}'
+```
+
+Set `JARVIS_API_TOKEN` to require `Authorization: Bearer <token>`. The server binds to `127.0.0.1` by default — bind `0.0.0.0` only on a trusted network.
+
+---
+
+## Tools (100)
+
+| Category | Count | Highlights |
+| --- | --- | --- |
+| browser | 17 | `browse_open`, `page_click/type/press/scroll/tabs/js/find`, `browser_launch`, `browser_status`, `page_screenshot` |
+| screen | 19 | `take_desktop_screenshot`, `read_screen_text`, `screen_click_text`, `screen_fill_field`, `cursor_move/click`, `keyboard_type/press`, windows, `launch_application` |
+| utility | 16 | `calculate`, `percentage`, `get_current_datetime`, `convert_timezone`, `json_parse`, `clipboard_get/set`, `image_info/resize/convert`, `list_available_tools`, `tool_help` + 5 memory tools |
+| file | 11 | `read_file`, `write_file`, `append_file`, `delete_path` (→ trash), `move_path`, `copy_path`, `file_info`, `list_directory`, `file_search`, `find_files_by_name`, `directory_size` |
+| code | 8 | `run_python`, `analyze_python`, `run_bash` (destructive-command guard), `code_outline`, `code_find_symbol`, `code_project_summary`, `which_command`, `system_info` |
+| communication | 8 | `draft_email`, `send_email`, `email_status`, `http_request`, `send_webhook`, `download_file`, `send_notification`, `speak` |
+| crawl | 8 | `read_url` (chain), `read_many`, `crawl_tools_report`, `jina_read_url`, `local_read_url`, `firecrawl_scrape/crawl/map` |
+| search | 8 | `search_web` (chain), `parallel_search`, `search_news`, `search_providers`, `tavily_search`, `tavily_answer`, `serper_search`, `searxng_search` |
+| memory | 5 | `remember`, `recall`, `search_memory`, `forget`, `memory_stats` |
+
+Every tool has a validated JSON schema (`python -m jarvis tools spec calculate` shows it), a timeout, and returns `ToolResult(ok, content, data, error, elapsed_ms, artifacts)`. Blocked and destructive operations return `ok=false` with the reason — never a silent success.
+
+---
+
+## Agents
+
+Six specialists share the same brain, memory and registry, but only see the tools they need:
+
+| Agent | Iterations | Calls | Toolbox |
+| --- | --- | --- | --- |
+| `browser` | 8 | 14 | browser + crawl |
+| `research` | 7 | 12 | search + crawl + memory |
+| `code` | 8 | 16 | code + file |
+| `file` | 6 | 12 | file |
+| `screen` | 8 | 16 | screen + utility |
+| `memory` | 5 | 10 | memory + utility |
+
+```bash
+python -m jarvis agents
+python -m jarvis delegate browser "open codeex-ai.vercel.app and read the hero section"
+python -m jarvis ask "research the best free LLM APIs and save the findings"   # auto-routed
+```
+
+Routing is keyword-scored with structural signals (a URL + "open" → browser; "write/fix/run" + code → code; "my preference" → memory); below the confidence threshold the main orchestrator handles the turn itself.
+
+---
+
+## Architecture
+
+```
+                       ┌──────────────────────────┐
+   CLI / API ─────────► │  Orchestrator            │  guards: 12 iterations,
+                       │  perceive→plan→act→learn │  24 calls, 300 s/turn
+                       └────┬───────────┬─────────┘
+                            │           │
+              ┌─────────────▼──┐   ┌────▼─────────────┐
+              │  Brain         │   │  Agents (6)      │
+              │  prompt+pick   │   │  browser/research│
+              └────┬───────────┘   └────┬─────────────┘
+                   │                    │
+        ┌──────────▼─────────┐   ┌──────▼────────────┐
+        │ API Manager        │   │  Tool Registry    │
+        │ health·quota·retry │   │  100 tools / 9    │
+        │ verified failover  │   │  categories       │
+        └──────────┬─────────┘   └──────┬────────────┘
+                   │                    │
+   ollama→groq→cerebras→openrouter→   browser·screen·search·crawl·
+   gemini→hf→stub                     code·file·utility·comms·memory
+                   │                    │
+              ┌────▼────────────────────▼─────┐
+              │  Smart Memory Manager         │
+              │  working/episodic/semantic/   │
+              │  procedural · hybrid recall   │
+              └───────────────────────────────┘
+```
+
+- **Context manager** keeps the prompt inside a 14 000-token budget: it merges system blocks, shrinks tool results, compacts old turns into a running summary, and guarantees the newest user turn always survives.
+- **Tool selection** scores every tool against the request (category + name + docstring overlap with regex boosts for maths, dates and URLs), so a small local model gets ≤ 9 relevant tools instead of all 100.
+- **Everything is inspectable**: `jarvis status`, `jarvis doctor`, `TurnResult.context_line`, `memory.budget_report()`.
+
+---
+
+## Free-tier limits
+
+JARVIS tracks every provider's free allowance and refuses to exceed it (`data/quota.db`):
+
+| Provider | Free allowance (tracked) | Notes |
+| --- | --- | --- |
+| ollama | unlimited | local models — the primary free brain |
+| groq | 30 rpm / 14 400 rpd | very fast free tier, no card |
+| cerebras | 30 rpm / 14 400 rpd | free tier |
+| openrouter | 20 rpm / 50 rpd | free models (`:free` suffix) |
+| gemini | 15 rpm / 1 500 rpd | free tier |
+| huggingface | 10 rpm / 1 000 rpd | inference API |
+| tavily | 1 000 searches/month | search |
+| serper | 2 500 one-time credits | search |
+| firecrawl | 500 one-time credits | crawl (last resort) |
+| jina reader | ~20 rpm keyless | crawl (first choice) |
+
+`jarvis quota` shows live usage; `jarvis quota --reset groq` clears a counter (e.g. after the daily reset).
+
+---
+
+## Configuration
+
+`config.yaml` is the single source of truth; everything can also come from the environment with the `JARVIS__SECTION__KEY` pattern, and secrets are read from `.env` / real env vars (see `.env.example`).
+
+```yaml
+llm:
+  provider: auto                 # auto = verified fallback chain
+  fallback_chain: [ollama, groq, cerebras, openrouter, gemini, hf, stub]
+  model: hermes3:3b              # small enough for a 4 GB laptop
+  cost_policy: free              # refuse anything that could bill money
+
+browser:
+  engine_order: [playwright, selenium, cdp, screen]
+  hybrid:  {enabled: true, move_duration_ms: 260, click_settle_ms: 350}
+
+screen:
+  vision_model: false            # by design — OCR + DOM only
+  ocr: {min_confidence: 45, fuzzy_threshold: 0.8}
+
+memory:
+  working_window: 24
+  importance_threshold: 0.35
+  consolidation_interval: 25
+  recall_budget: 3500
+  long_term: {embedding_provider: auto, dedupe_threshold: 0.9}
+```
+
+Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_TRASH_DIR`, `JARVIS_CHROME_PATH`, `JARVIS_PROFILE`, `JARVIS_API_HOST/PORT/TOKEN`, plus the provider keys (`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `HUGGINGFACE_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`).
+
+---
+
+## Troubleshooting / doctor
+
+`python -m jarvis doctor` is the first thing to run on a new machine — it reports and *fixes*:
+
+| Symptom | Fix (JARVIS prints this verbatim) |
+| --- | --- |
+| `no display` / screen tools refuse | `bash scripts/start-xvfb.sh` or log into a desktop session |
+| cursor/typing does nothing on Linux | `apt-get install xdotool` (or `ydotool` on Wayland) |
+| `browser: needs Chrome` | `pip install playwright && playwright install chromium` |
+| OCR returns nothing | `apt-get install tesseract-ocr` + `pip install pytesseract` |
+| `no API key` for every LLM | `ollama serve && ollama pull hermes3:3b`, or set one free key |
+| search finds nothing | keyless DDG/Jina need outbound network; a key is faster |
+| first response is slow | first ollama call loads the model into RAM (normal) |
+
+---
+
+## Tests
+
+```bash
+python -m pytest tests/ -q          # 86 tests, no network, no model needed
+```
+
+| File | Covers |
+| --- | --- |
+| `tests/test_core.py` | config, messages, context budgeting, api manager fallback, quota, rate limiting |
+| `tests/test_tools.py` | registry, schema validation, filesystem, bash safety matrix, memory tools, honest-failure contract |
+| `tests/test_browser_screen.py` | DOM parsing, selectors, screen-point mapping, harness chain, cursor maths |
+| `tests/test_memory.py` | importance gate, dedupe, decay, consolidation, recall budget, skills, sessions |
+| `tests/test_agent_flow.py` | orchestrator turns, tool selection, agent routing, API surface, CLI wiring |
+
+Everything is hermetic: a temporary config, a temporary home, blanked API keys, the stub provider.
+
+---
+
+## Project layout
+
+```
+jarvis/
+├── core/            orchestrator, brain, api manager, context manager, messages, providers
+├── memory/          manager, embedder, vector store, tiers, profile, skills, sessions, knowledge
+├── tools/
+│   ├── browser/     harness, DOM parser, CDP, terminal launcher, actions, screenshots
+│   ├── screen/      backends, mouse/keyboard, capture, OCR, windows, actions
+│   ├── search/      base (quota+http), tavily, serper, searxng, parallel
+│   ├── crawl/       reader chain, jina, firecrawl, local extractor
+│   ├── code/        python executor, bash executor (guarded), analyzer
+│   ├── filesystem/  file ops (trash-aware), directory tree, search
+│   ├── utility/     calculator, datetime, json, clipboard, image, memory, discovery
+│   └── communication/ email, webhooks, notifications, speech
+├── agents/          base, 6 specialists, factory + routing
+├── interfaces/      CLI (rich), API server (stdlib/FastAPI)
+├── utils/           logger, tokens, sanitizer, rate limiting, quota, platform probe
+├── persona.py       who Heoster is (drives profile + system prompt)
+├── config.py        layered config + .env + JARVIS__ overrides
+└── version.py       name, version, banner
+knowledge/            operator profile + command reference (auto-ingested)
+scripts/             setup, chrome harness, Xvfb, doctor, wrapper
+tests/               86 hermetic tests
+```
+
+---
+
+## Status & limits
+
+- **Verified here**: 86/86 tests, CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
+- **Needs hardware to verify**: real Chrome engines, cursor movement and OCR — this sandbox has no browser binary, no `DISPLAY` and no `xdotool`. The harness reports *precisely* what is missing rather than failing silently, and `browser --verify --deep` performs the same check on your machine.
+- **Not implemented on purpose**: any paid API, any vision model, any telemetry. JARVIS sends data nowhere except the providers and readers you configure.
+
+Built for **Heoster** — CODEEX-AI · MIT licensed · *free for everyone, at zero cost.*

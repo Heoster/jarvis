@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Wrapper so `scripts/jarvis ...` works from anywhere in the repo.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+if [ -d .venv ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+fi
+exec python -m jarvis "$@"

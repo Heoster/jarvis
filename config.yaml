@@ -1,0 +1,231 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  JARVIS — Autonomous eXecution Intelligence & Orchestration Machine
+#  Single-operator build for Heoster (Harsh Saini) · CODEEX-AI
+#
+#  Every value below can be overridden with an env var using the pattern
+#  JARVIS__SECTION__KEY  (e.g. JARVIS__LLM__MODEL=qwen2.5:3b).
+# ════════════════════════════════════════════════════════════════════════════
+
+jarvis:
+  version: "1.0.0"
+  name: "JARVIS"
+  codename: "Just A Rather Very Intelligent System"
+  operator: "Heoster"
+  company: "CODEEX-AI"
+  # "free" hard-locks the system to zero-cost providers only. Nothing that
+  # could bill you will ever be called while this is true.
+  cost_policy: "free"
+
+# ── LLM Backend + Auto-Fallback Chain ───────────────────────────────────────
+llm:
+  provider: "auto"                 # auto | ollama | groq | cerebras | openrouter | gemini | hf | stub
+  model: "hermes3:3b"              # or qwen2.5:3b, llama3.2:3b, qwen2.5:7b
+  base_url: "http://localhost:11434"
+  temperature: 0.3
+  max_tokens: 2048                 # max generation per turn
+  context_window: 16384            # total budget we target
+  request_timeout: 120
+  # Ordered fallback chain. JARVIS walks down this list on any failure,
+  # rate-limit, quota exhaustion or unhealthy probe.
+  fallback_chain: ["ollama", "groq", "cerebras", "openrouter", "gemini", "hf", "stub"]
+  # Provider-specific models used when the primary chain member is selected.
+  provider_models:
+    ollama: "hermes3:3b"
+    groq: "llama-3.3-70b-versatile"
+    cerebras: "llama3.1-8b"
+    openrouter: "meta-llama/llama-3.3-70b-instruct:free"
+    gemini: "gemini-2.0-flash-lite"
+    hf: "meta-llama/Llama-3.2-3B-Instruct"
+  api_manager:
+    health_cache_seconds: 90       # how long a probe result is trusted
+    probe_on_start: true
+    auto_heal: true                # retry previously-failed providers after backoff
+    max_retries_per_provider: 2
+    backoff_base_seconds: 2.0
+    backoff_max_seconds: 120.0
+    verify_after_fallback: true    # re-probe the failed provider in background
+
+# ── Context Management (the reason 8K–16K windows are enough) ───────────────
+context:
+  max_budget: 14000
+  system_prompt_budget: 2000
+  tool_definitions_budget: 2500
+  memory_budget: 3500
+  conversation_budget: 3500
+  output_budget: 1500
+  auto_compact: true
+  compact_threshold: 0.85
+  max_tool_result_chars: 4000      # tool output snipped before it reaches the LLM
+  selective_tools: true            # keyword-select 5–8 tools instead of all 40+
+
+# ── Memory (FOCUS AREA #1) ──────────────────────────────────────────────────
+memory:
+  manager:
+    importance_threshold: 0.35     # below this a turn is only kept short-term
+    dedupe_similarity: 0.93        # near-duplicate collapse threshold
+    consolidation_interval: 25     # turns between background consolidations
+    max_long_term_entries: 20000
+    decay_half_life_days: 45
+    recall_k: 6
+    hybrid_search: true            # vector + keyword + recency fusion (RRF)
+    session_digest: true           # write a digest when a session closes
+  short_term:
+    type: "sliding_window"
+    max_messages: 24
+    summarize_after: 14
+  long_term:
+    backend: "auto"                # auto | sqlite_vector | chromadb
+    persist_directory: "./memory_store"
+    collection_name: "jarvis_memory"
+    embedding_provider: "auto"     # auto | ollama | local
+    embedding_model: "nomic-embed-text"
+    embedding_dim: 384
+  knowledge_base:
+    enabled: true
+    directory: "./knowledge"
+    chunk_size: 900
+    chunk_overlap: 120
+    auto_ingest: true
+  skills:
+    directory: "./skills"
+    auto_load: true
+  profile:
+    # Seed facts about the operator. Refreshed by `jarvis profile --refresh`.
+    autoload: true
+
+# ── Search APIs (all free tier, all quota-guarded) ──────────────────────────
+search:
+  provider_order: ["tavily", "serper", "searxng", "ddg", "jina"]
+  parallel:
+    enabled: true
+    engines: ["tavily", "serper"]
+    max_results_per_engine: 5
+  tavily:
+    api_key: ""
+    search_depth: "basic"
+    free_limit: 1000
+    period: "month"
+  serper:
+    api_key: ""
+    free_limit: 2500
+    period: "total"
+  searxng:
+    base_url: "http://localhost:8080"
+    free_limit: 0                  # 0 = unlimited (self hosted)
+  duckduckgo:
+    enabled: true
+    base_url: "https://html.duckduckgo.com/html/"
+    free_limit: 0
+  jina:
+    base_url: "https://s.jina.ai"
+    free_limit: 0
+
+# ── Crawling ────────────────────────────────────────────────────────────────
+crawl:
+  # automatic fallback order used by `read_url` (first reader with usable text wins)
+  chain: ["jina", "local", "firecrawl"]
+  provider_order: ["jina", "local", "firecrawl"]
+  firecrawl:
+    api_key: ""
+    timeout: 30
+    free_limit: 500
+    period: "total"
+  jina_reader:
+    base_url: "https://r.jina.ai"
+    free_limit: 0
+  local_fallback: "trafilatura"    # trafilatura → builtin regex extractor
+  max_chars: 12000
+
+# ── Browser Control (FOCUS AREA #2) ─────────────────────────────────────────
+browser:
+  # auto walks this chain until something works: playwright → selenium → cdp → screen
+  engine: "auto"                   # auto | playwright | selenium | cdp | screen
+  engine_chain: ["playwright", "selenium", "cdp"]
+  browser_type: "chromium"         # chromium | chrome | firefox | edge
+  headless: false                  # false ⇒ a real window you can also see
+  launch_from_terminal: true       # spawn the binary ourselves (no vision model needed)
+  window:
+    width: 1440
+    height: 900
+    left: 0
+    top: 0
+  timeout: 30000
+  user_data_dir: ""                # set to reuse your logged-in Chrome profile
+  remote_debugging_port: 9222
+  binary_path: ""                  # auto-detected if empty
+  user_agent: ""                   # empty = browser default
+  stealth: true
+  screenshot_dir: "./data/screenshots"
+  dom:
+    max_elements: 120              # interactive elements fed to the LLM
+    max_text_chars: 6000
+    include_frames: true
+    annotate_index: true           # "[12] <a> Login" — LLM clicks by index
+  hybrid:
+    enabled: true                  # DOM-locates, OS-executes (screen control)
+    coordinate_source: "dom"       # dom | screen_scale
+    click_settle_ms: 350
+    move_duration_ms: 260
+    jitter: true                   # human-ish cursor path, less bot-flagged
+
+# ── Screen Control (FOCUS AREA #3) ──────────────────────────────────────────
+screen:
+  enabled: true
+  # No vision model anywhere in this project. Pixels are never sent to an LLM:
+  # text is read with OCR (tesseract) and structure comes from the DOM/AT-SPI.
+  vision_model: false
+  screenshot_format: "png"
+  screenshot_dir: "./data/screenshots"
+  ocr_engine: "tesseract"          # tesseract | easyocr | none
+  ocr_enabled: true
+  mouse_speed: 0.5
+  move_duration_ms: 260
+  failsafe: true                   # slam cursor into a corner to abort
+  backend: "auto"                  # auto | pyautogui | xdotool | ydotool | powershell | osascript
+  display: ""                      # e.g. ":0" for a headless X server (Xvfb)
+  allow_click_outside_window: true
+
+# ── Code Execution ─────────────────────────────────────────────────────────
+code:
+  python:
+    enabled: true
+    sandbox: true
+    timeout: 30
+  bash:
+    enabled: true
+    timeout: 15
+    # Substrings that are ALWAYS refused.  Shape-based patterns (rm -rf /, dd to
+    # a raw disk, pipe-to-shell…) live in jarvis/tools/code/bash_executor.py so a
+    # harmless `rm -rf /tmp/scratch` is not blocked by a substring match.
+    blocked_commands: ["mkfs", "wipefs", "shutdown", "reboot", "poweroff", "halt",
+                       "init 0", ":(){", "fork bomb", "chmod -R 777 /",
+                       "format c:", "del /f /s /q c:"]
+
+# ── Sessions ────────────────────────────────────────────────────────────────
+sessions:
+  auto_save: true
+  save_interval: 60
+  database: "./sessions/jarvis.db"
+  max_sessions: 100
+
+# ── Free-tier / quota guard ────────────────────────────────────────────────
+limits:
+  enabled: true
+  hard_stop_on_exhaustion: false   # false ⇒ fall through to the next free provider
+  warn_at_percent: 80
+  database: "./data/quota.db"
+  global_requests_per_minute: 60
+
+# ── Interface ───────────────────────────────────────────────────────────────
+interface:
+  type: "cli"                      # cli | api | web
+  theme: "dark"
+  show_tool_calls: true
+  show_thinking: true
+  show_token_usage: true
+  show_fallback_notices: true
+  api:
+    host: "0.0.0.0"
+    port: 8000
+    openai_compatible: true
+    api_key: ""                    # empty = local, single-user, no auth needed
