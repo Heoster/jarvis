@@ -625,7 +625,7 @@ def subject_overview(vault: Path) -> List[Dict[str, Any]]:
     if not root.is_dir():
         return rows
     for subject_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-        notes = load_notes(vault, folder=str(subject_dir.relative_to(vault)))
+        notes = load_notes(vault, folder=subject_dir.relative_to(vault).as_posix())
         if not notes and not subject_dir.is_dir():
             continue
         words = sum(note.word_count for note in notes)

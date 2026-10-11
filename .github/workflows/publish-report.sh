@@ -49,9 +49,12 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git config core.autocrlf false
 
 for attempt in 1 2 3 4 5; do
+  # Rebase on the branch tip without touching the work tree: the matrix jobs run
+  # concurrently, so a hard reset here would delete the reports the other jobs
+  # just pushed. Only this job's own report is ever staged.
   git fetch --quiet origin "$branch"
-  git reset --quiet "origin/$branch"
-  git add "$out"
+  git reset --mixed --quiet "origin/$branch"
+  git add -- "$report"
   if git diff --cached --quiet; then
     echo "report already published ($report)"
     exit 0
