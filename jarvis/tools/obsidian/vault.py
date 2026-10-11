@@ -214,9 +214,9 @@ def parse_note(path: Path, vault: Path) -> Note:
         first_heading = HEADING_RE.search(body)
         title = (first_heading.group(2).strip() if first_heading else path.stem)
     stat = path.stat()
-    return Note(path=path, rel=str(path.relative_to(vault)), title=title, raw=raw,
+    return Note(path=path, rel=path.relative_to(vault).as_posix(), title=title, raw=raw,
                 frontmatter=frontmatter, body=body, links=links, tags=tags,
-                tasks=parse_tasks(body, str(path.relative_to(vault))),
+                tasks=parse_tasks(body, path.relative_to(vault).as_posix()),
                 mtime=stat.st_mtime, size=stat.st_size)
 
 
@@ -275,7 +275,7 @@ def vault_index(vault: Path) -> Dict[str, Path]:
     """Map every reasonable *name* for a note to its path (for resolution)."""
     index: Dict[str, Path] = {}
     for path in iter_notes(vault):
-        rel = str(path.relative_to(vault))
+        rel = path.relative_to(vault).as_posix()
         for key in (rel, rel[:-3], path.stem):
             index.setdefault(key.lower(), path)
     return index
