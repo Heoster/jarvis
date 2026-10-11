@@ -8,7 +8,7 @@ agent needs for deadlines, exams and reminders.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,12 +23,24 @@ __all__ = ["now", "get_current_datetime", "convert_timezone", "time_since",
 DEFAULT_TZ = "Asia/Kolkata"
 
 
-def _zone(name: str) -> ZoneInfo:
+def _zone(name: str) -> tzinfo:
+    """Resolve a zone name, degrading to a fixed UTC offset instead of raising.
+
+    Windows has no system tz database, so ``ZoneInfo`` needs the ``tzdata``
+    package (declared in pyproject for win32). If it is still missing — a
+    stripped-down install, a frozen binary — ``ZoneInfo("UTC")`` fails too, and
+    the date tools must keep working rather than take the whole turn down.
+    """
     try:
         return ZoneInfo(name or DEFAULT_TZ)
-    except ZoneInfoNotFoundError:
-        log.debug(f"unknown timezone '{name}', using UTC")
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        log.debug(f"unknown timezone '{name}' ({exc}), using UTC")
+    try:
         return ZoneInfo("UTC")
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        log.warning("no tz database available (pip install tzdata) — using a "
+                    "fixed UTC offset, so named zones will not resolve")
+        return timezone.utc
 
 
 def now(tz: str = DEFAULT_TZ) -> datetime:
