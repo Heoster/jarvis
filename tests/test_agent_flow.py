@@ -202,3 +202,21 @@ def test_cli_tools_lists_a_category():
     result = CliRunner().invoke(main, ["tools", "screen"])
     assert result.exit_code == 0
     assert "cursor_click" in result.output
+
+
+def test_study_agent_routes_and_has_vault_tools(config):
+    from jarvis.agents.specialists import AGENT_CLASSES, StudyAgent
+
+    assert "study" in AGENT_CLASSES
+    decision = "make flashcards from my physics notes"
+    factory = None
+    from jarvis.agents.agent_factory import AgentFactory
+
+    routed = AgentFactory(config).route(decision)
+    assert routed is not None and routed.agent == "study"
+
+    agent = StudyAgent(config)
+    names = {tool.name for tool in agent.tools()}
+    assert {"obsidian_flashcards_due", "obsidian_write_note",
+            "obsidian_study_plan"} <= names
+    assert len(names) <= 22

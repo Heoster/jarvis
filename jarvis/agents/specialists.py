@@ -1,4 +1,4 @@
-"""The specialist sub-agents: browser, research, code, file, screen.
+"""The specialist sub-agents: browser, research, code, file, screen, study.
 
 Each has a narrow toolbox and a prompt tuned for its job.  On a CPU-only box that
 matters: a browser agent with 8 tools makes far fewer mistakes than the full
@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 from .base_agent import AgentSpec, BaseAgent
 
 __all__ = ["BrowserAgent", "ResearchAgent", "CodeAgent", "FileAgent",
-           "ScreenAgent", "MemoryAgent", "AGENT_CLASSES", "get_agent"]
+           "ScreenAgent", "MemoryAgent", "StudyAgent", "AGENT_CLASSES", "get_agent"]
 
 
 class BrowserAgent(BaseAgent):
@@ -157,6 +157,41 @@ class MemoryAgent(BaseAgent):
     )
 
 
+class StudyAgent(BaseAgent):
+    """The student worker: notes, flashcards, revision queues and study plans."""
+
+    spec = AgentSpec(
+        name="study",
+        description="Obsidian study workflow: notes, flashcards, revision, exams, plans.",
+        categories=("obsidian", "memory", "utility"),
+        tools=("obsidian_status", "obsidian_search", "obsidian_read_note",
+               "obsidian_write_note", "obsidian_daily_note", "obsidian_list_notes",
+               "obsidian_tasks", "obsidian_links", "obsidian_flashcards_add",
+               "obsidian_flashcards_due", "obsidian_flashcards_review",
+               "obsidian_revision_queue", "obsidian_study_plan", "obsidian_exams",
+               "obsidian_plugins", "recall", "remember", "read_url", "search_web"),
+        max_iterations=6, max_tool_calls=14,
+        prompt=(
+            "You are JARVIS's STUDY agent, working inside the student's Obsidian\n"
+            "vault (plain markdown files).\n"
+            "Method:\n"
+            "1. Find material with `obsidian_search` / `obsidian_list_notes`, then\n"
+            "   read the best note with `obsidian_read_note`.\n"
+            "2. Save anything useful with `obsidian_write_note` (append rather than\n"
+            "   overwrite when the note already exists) or `obsidian_daily_note` for\n"
+            "   today's log. Cite notes as [[Wikilinks]].\n"
+            "3. Turn notes into cards with `obsidian_flashcards_add(from_note=…)`, and\n"
+            "   always end a revision session by grading the cards you drilled\n"
+            "   (`obsidian_flashcards_review`, grades again/hard/good/easy).\n"
+            "4. Before an exam, build a day-by-day plan with `obsidian_study_plan` and\n"
+            "   report the days left (`obsidian_exams`).\n"
+            "Rules: never invent a note or a card that does not exist — check first;\n"
+            "keep answers short, structured and encouraging; prefer formulas, bullets\n"
+            "and worked steps over prose."
+        ),
+    )
+
+
 AGENT_CLASSES = {
     "browser": BrowserAgent,
     "research": ResearchAgent,
@@ -164,6 +199,7 @@ AGENT_CLASSES = {
     "file": FileAgent,
     "screen": ScreenAgent,
     "memory": MemoryAgent,
+    "study": StudyAgent,
 }
 
 

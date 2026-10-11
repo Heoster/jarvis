@@ -171,12 +171,14 @@ class ToolRegistry:
     def load_all_default_tools(self, config: Optional[Mapping[str, Any]] = None,
                                *, verbose: bool = True) -> int:
         """Import and register every built-in JARVIS tool."""
-        from . import browser, screen, search, crawl, code, filesystem, utility, communication
+        from . import (browser, communication, code, crawl, filesystem, obsidian,
+                       screen, search, utility)
 
         modules: List[Tuple[str, Any]] = [
             ("browser", browser), ("screen", screen), ("search", search),
             ("crawl", crawl), ("code", code), ("filesystem", filesystem),
             ("utility", utility), ("communication", communication),
+            ("obsidian", obsidian),
         ]
         total = 0
         for category, module in modules:

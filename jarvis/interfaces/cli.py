@@ -376,6 +376,359 @@ def memory(consolidate: bool, query: str) -> None:
     say(manager.report())
 
 
+
+def _obsidian_errors(func):
+    """Turn vault problems into a readable line instead of a traceback."""
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        from ..tools.obsidian.vault import ObsidianError
+
+        try:
+            return func(*args, **kwargs)
+        except (ObsidianError, ValueError) as exc:
+            say(f"⚠ {exc}", "red")
+            raise click.exceptions.Exit(1)
+    return wrapper
+
+# ── obsidian (notes · flashcards · study planning) ──────────────────────────
+@main.group(invoke_without_command=True)
+@click.option("--vault", default="", help="Vault folder (overrides OBSIDIAN_VAULT).")
+@click.pass_context
+def obsidian(ctx: click.Context, vault: str) -> None:
+    """Obsidian vault: notes, flashcards, revision queue, study plans."""
+    ctx.ensure_object(dict)
+    ctx.obj["vault"] = vault
+    if ctx.invoked_subcommand is None:
+        _obsidian_status(vault)
+
+
+def _obsidian_vault(vault: str = ""):
+    from ..tools.obsidian.study import study_report
+    from ..tools.obsidian.vault import resolve_vault
+
+    cfg = load_config()
+    return cfg, resolve_vault(cfg, explicit=vault)
+
+
+@_obsidian_errors
+def _obsidian_status(vault: str = "") -> None:
+    from ..tools.obsidian.study import study_report
+
+    cfg, path = _obsidian_vault(vault)
+    say(study_report(path, cfg))
+
+
+@obsidian.command("status")
+@click.pass_context
+@_obsidian_errors
+def obsidian_status(ctx: click.Context) -> None:
+    """Vault, notes, due cards, exams."""
+    _obsidian_status(ctx.obj.get("vault", "") if ctx.obj else "")
+
+
+@obsidian.command("search")
+@click.argument("query")
+@click.option("--limit", type=int, default=20, help="Maximum matches.")
+@click.option("--folder", default="", help="Restrict to a folder.")
+@click.pass_context
+@_obsidian_errors
+def obsidian_search(ctx: click.Context, query: str, limit: int, folder: str) -> None:
+    """Search every note in the vault."""
+    from ..tools.obsidian.vault import search_vault
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    hits = search_vault(path, query, limit=limit, folder=folder)
+    if not hits:
+        say(f"No notes matched '{query}'.", "yellow")
+        return
+    for hit in hits:
+        say(f"  {hit.note}:{hit.line} — {truncate(' '.join(hit.text.split()), 120)}")
+
+
+@obsidian.command("notes")
+@click.option("--folder", default="", help="Restrict to a folder.")
+@click.option("--tag", default="", help="Only notes with this tag.")
+@click.option("--limit", type=int, default=30)
+@click.pass_context
+@_obsidian_errors
+def obsidian_notes(ctx: click.Context, folder: str, tag: str, limit: int) -> None:
+    """List notes (newest first)."""
+    from ..tools.obsidian.vault import load_notes
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    notes = load_notes(path, folder=folder)
+    if tag:
+        notes = [note for note in notes if tag.lstrip("#") in note.tags]
+    notes.sort(key=lambda note: -note.mtime)
+    for note in notes[:limit]:
+        say(f"  {note.rel:<52} {note.metadata_line()}")
+
+
+@obsidian.command("read")
+@click.argument("note")
+@click.option("--max-chars", type=int, default=4000)
+@click.pass_context
+@_obsidian_errors
+def obsidian_read(ctx: click.Context, note: str, max_chars: int) -> None:
+    """Print one note."""
+    from ..tools.obsidian.vault import read_note
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    loaded = read_note(path, note)
+    say(f"{loaded.title} ({loaded.rel}) · {loaded.metadata_line()}\n")
+    say(truncate(loaded.body, max_chars))
+
+
+@obsidian.command("daily")
+@click.option("--text", default="", help="Text to append to the daily note.")
+@click.option("--day", default="", help="Date YYYY-MM-DD (default today).")
+@click.option("--section", default="Study log", help="Heading to append under.")
+@click.pass_context
+@_obsidian_errors
+def obsidian_daily(ctx: click.Context, text: str, day: str, section: str) -> None:
+    """Create or open today's daily note."""
+    from datetime import date
+
+    from ..tools.obsidian.vault import append_under_heading, daily_note
+
+    cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    when = date.fromisoformat(day) if day else date.today()
+    note = daily_note(path, day=when, config=cfg)
+    if text:
+        note = append_under_heading(path, note.rel, section, text)
+    say(f"✅ {note.rel} ({note.word_count} words)")
+
+
+@obsidian.command("tasks")
+@click.option("--all", "include_done", is_flag=True, help="Include finished tasks.")
+@click.option("--due-before", default="", help="Only tasks due on/before this date.")
+@click.option("--complete", default="", help="Mark done: \"note.md:line\".")
+@click.pass_context
+@_obsidian_errors
+def obsidian_tasks(ctx: click.Context, include_done: bool, due_before: str,
+                   complete: str) -> None:
+    """List or complete checkbox tasks."""
+    from ..tools.obsidian.vault import all_tasks, toggle_task
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    if complete:
+        reference, _, line = complete.rpartition(":")
+        say(str(toggle_task(path, reference, int(line), done=True)))
+        return
+    tasks = all_tasks(path, include_done=include_done, due_before=due_before)
+    if not tasks:
+        say("No open tasks.")
+        return
+    for task in tasks:
+        due = f" (due {task.due})" if task.due else ""
+        say(f"  [ ] {truncate(task.text, 90)}{due}  {task.note}:{task.line}")
+
+
+@obsidian.command("cards")
+@click.argument("action", type=click.Choice(["due", "stats", "add", "from-note", "review",
+                                             "forecast"]))
+@click.argument("args", nargs=-1)
+@click.option("--note", default="", help="Target note for add/review.")
+@click.option("--grade", default="good", help="again|hard|good|easy")
+@click.option("--limit", type=int, default=12)
+@click.pass_context
+@_obsidian_errors
+def obsidian_cards(ctx: click.Context, action: str, args: tuple, note: str, grade: str,
+                   limit: int) -> None:
+    """Flashcards: due · stats · add "Q :: A" · from-note <note> · forecast · review."""
+    from datetime import date
+
+    from ..tools.obsidian.flashcards import (SrsStore, collect_cards, due_cards,
+                                             generate_cards_from_note, review_forecast,
+                                             schedule)
+    from ..tools.obsidian.vault import append_under_heading, read_note, write_note
+
+    cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    store = SrsStore()
+    if action == "stats":
+        stats = store.stats()
+        say(f"tracked {stats['tracked']} · due {stats['due']} · mature {stats['mature']} · "
+            f"learning {stats['learning']} · reviews {stats['reviews']} · streak {stats['streak']}d")
+        say(f"schedule file: {stats['path']}")
+        return
+    cards = collect_cards(path, store=store)
+    if action == "forecast":
+        say(review_forecast(cards))
+        return
+    if action == "due":
+        due = due_cards(cards, limit=limit)
+        if not due:
+            say("Nothing due — you are ahead. 🎉")
+            return
+        for card in due:
+            say(f"  Q: {card.question}")
+            say(f"  A: {card.answer}   [{card.note} · "
+                f"{'new' if card.is_new else card.due}]", "green")
+        return
+    if action == "add":
+        pairs = [value for value in args if "::" in value]
+        if not pairs:
+            say("Give cards as \"Question :: Answer\" arguments.", "red")
+            return
+        block = "\n".join(f"- {pair}" for pair in pairs)
+        if note:
+            append_under_heading(path, note, "Flashcards", block)
+        else:
+            write_note(path, f"Cards {date.today().isoformat()}.md",
+                       f"## Flashcards\n\n{block}\n", folder="03 Flashcards",
+                       frontmatter={"type": "flashcards", "tags": ["flashcard"]})
+        say(f"✅ saved {len(pairs)} card(s)")
+        return
+    if action == "from-note":
+        if not note:
+            say("Use --note <note> to choose the source.", "red")
+            return
+        source = read_note(path, note)
+        generated = generate_cards_from_note(source.body)
+        if not generated:
+            say("Nothing card-worthy found in that note.", "yellow")
+            return
+        block = "\n".join(f"- {card.question} :: {card.answer}" for card in generated)
+        append_under_heading(path, source.rel, "Flashcards", block)
+        say(f"✅ {len(generated)} card(s) added to {source.rel}")
+        return
+    if action == "review":
+        question = " ".join(args).strip()
+        if not note:
+            say("Use --note <note> (and the question text) to review a card.", "red")
+            return
+        source = read_note(path, note)
+        from ..tools.obsidian.flashcards import cards_from_text
+
+        match = next((card for card in cards_from_text(source.rel, source.body)
+                      if not question or question.lower() in card.question.lower()), None)
+        if match is None:
+            say("No matching card.", "red")
+            return
+        store.get(match)
+        schedule(match, grade)
+        store.update(match)
+        say(f"✅ [{grade}] next review {match.due} (interval {match.interval:.0f}d)")
+
+
+@obsidian.command("plan")
+@click.option("--exam", "exam_date", required=True, help="Exam date YYYY-MM-DD.")
+@click.option("--subjects", default="", help="Comma separated subjects.")
+@click.option("--topics-per-day", type=int, default=2)
+@click.option("--session-minutes", type=int, default=45)
+@click.option("--no-daily", is_flag=True, help="Write only the plan note.")
+@click.pass_context
+@_obsidian_errors
+def obsidian_plan(ctx: click.Context, exam_date: str, subjects: str, topics_per_day: int,
+                  session_minutes: int, no_daily: bool) -> None:
+    """Build a day-by-day revision plan before an exam."""
+    from ..tools.obsidian.study import build_study_plan
+
+    cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    chosen = [s.strip() for s in subjects.split(",") if s.strip()]
+    plan = build_study_plan(path, exam_date=exam_date, subjects=chosen,
+                            topics_per_day=topics_per_day,
+                            session_minutes=session_minutes, write_daily=not no_daily,
+                            config=cfg)
+    say(f"✅ plan for {plan['exam_date']}: {plan['days']} days, {plan['topics']} topics")
+    say(f"   note: {plan['plan_note']}")
+    for day in sorted(plan["schedule"])[:7]:
+        topics = ", ".join(f"{s}: {t}" for s, t in plan["schedule"][day])
+        say(f"   {day}: {truncate(topics, 100)}")
+
+
+@obsidian.command("queue")
+@click.option("--limit", type=int, default=12)
+@click.pass_context
+@_obsidian_errors
+def obsidian_queue(ctx: click.Context, limit: int) -> None:
+    """What to revise right now: cards + overdue tasks + #revision notes."""
+    from ..tools.obsidian.study import revision_queue
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    queue = revision_queue(path, limit=limit)
+    say("**Cards**")
+    for card in queue["due_cards"] or []:
+        say(f"  Q: {card.question}\n  A: {card.answer}", "green")
+    if not queue["due_cards"]:
+        say("  none due")
+    say("**Tasks**")
+    for task in queue["tasks"] or []:
+        say(f"  [ ] {truncate(task.text, 80)}  {task.note}:{task.line}")
+    if not queue["tasks"]:
+        say("  none")
+    counts = queue["counts"]
+    say(f"_streak {counts['streak']}d · {counts['reviews']} reviews · "
+        f"{counts['tracked']} cards tracked_")
+
+
+@obsidian.command("plugins")
+@click.option("--install", is_flag=True, help="Install/enable the JARVIS plugin.")
+@click.pass_context
+@_obsidian_errors
+def obsidian_plugins_cmd(ctx: click.Context, install: bool) -> None:
+    """List vault plugins; install the JARVIS Obsidian plugin."""
+    from ..tools.obsidian.study import (RECOMMENDED_PLUGINS, install_obsidian_plugin,
+                                        installed_plugins, jarvis_plugin_status)
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    plugins = installed_plugins(path)
+    say(f"**{len(plugins)} plugin(s) installed:**")
+    for plugin in plugins:
+        state = "enabled" if plugin.enabled else "disabled"
+        say(f"  {plugin.name} ({plugin.id}) {plugin.version} — {state}")
+    if not plugins:
+        say("  none yet")
+    if install:
+        result = install_obsidian_plugin(path)
+        say(f"✅ JARVIS plugin installed → {result['plugin_dir']}")
+        say(f"   {result['restart_hint']}")
+    status = jarvis_plugin_status(path)
+    say(f"JARVIS plugin: {'installed' if status['installed'] else 'not installed'} "
+        f"({'enabled' if status['enabled'] else 'disabled'})")
+    say("\nRecommended (all free):")
+    have = {plugin.id for plugin in plugins}
+    for plugin_id, name, why in RECOMMENDED_PLUGINS:
+        say(f"  {'✓' if plugin_id in have else '·'} {name} — {why}")
+
+
+@obsidian.command("kit")
+@click.option("--subjects", default="", help="Comma separated subjects.")
+@click.option("--force", is_flag=True, help="Overwrite existing templates.")
+@click.pass_context
+@_obsidian_errors
+def obsidian_kit(ctx: click.Context, subjects: str, force: bool) -> None:
+    """Create the student vault structure (folders, templates, dashboard)."""
+    from ..tools.obsidian.study import DEFAULT_SUBJECTS, create_study_kit
+
+    _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    chosen = [s.strip() for s in subjects.split(",") if s.strip()] or DEFAULT_SUBJECTS
+    result = create_study_kit(path, subjects=chosen, overwrite_templates=force)
+    say(f"✅ study kit in {result['vault']} — {len(result['created'])} item(s) created")
+    for item in result["created"][:20]:
+        say(f"   {item}")
+
+
+@obsidian.command("exams")
+@click.option("--days", type=int, default=120, help="Look ahead N days.")
+@click.pass_context
+@_obsidian_errors
+def obsidian_exams_cmd(ctx: click.Context, days: int) -> None:
+    """Upcoming exams and days left."""
+    from ..tools.obsidian.study import exam_countdown
+
+    cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    exams = exam_countdown(path, cfg, within_days=days)
+    if not exams:
+        say("No exam notes found (add exam_date: YYYY-MM-DD to a note in 04 Exams).",
+            "yellow")
+        return
+    for exam in exams:
+        say(f"  {exam['exam']} — {exam['days_left']} day(s) left ({exam['date']})")
+
+
 @main.command()
 @click.option("--reset", "reset_provider", default="", help="Reset one provider's window.")
 def quota(reset_provider: str) -> None:

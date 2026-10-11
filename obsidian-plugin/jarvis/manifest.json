@@ -1,0 +1,10 @@
+{
+  "id": "jarvis",
+  "name": "JARVIS",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Ask your local JARVIS operator about the note you are reading: summaries, explanations, research, flashcards and revision queues — free, offline-first, no account.",
+  "author": "Heoster (CODEEX-AI)",
+  "authorUrl": "https://github.com/Heoster",
+  "isDesktopOnly": false
+}
