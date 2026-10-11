@@ -1,0 +1,23 @@
+# ── JARVIS core (small, installs on a 2-core laptop in seconds) ──
+pyyaml>=6.0            # config.yaml
+httpx>=0.27            # every outbound request (with timeouts + retries)
+rich>=13.0             # CLI rendering
+click>=8.1             # command line interface
+python-dotenv>=1.0     # optional: .env loading (config.py has its own parser too)
+
+# ── recommended for the three focus areas ──
+# Screen control (free, no vision model):
+pyautogui>=0.9.54  # cross-platform; on Linux it needs X11 (use Xvfb when headless)
+mss>=9.0           # fast screenshots (works headless on Xvfb)
+Pillow>=10.0       # image handling
+pytesseract>=0.3.10  # OCR — how JARVIS "reads" the screen without a vision model
+
+# Browser control:
+playwright>=1.44   # primary engine (then run: playwright install chromium)
+selenium>=4.20     # fallback engine
+websockets>=12.0   # full CDP command set for the terminal-launched Chrome
+
+# ── optional quality-of-life (JARVIS works without all of these) ──
+trafilatura>=1.8   # best HTML→text for the local reader
+beautifulsoup4>=4.12
+tiktoken>=0.7      # exact token counts instead of the calibrated estimator

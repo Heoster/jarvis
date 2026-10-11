@@ -1,0 +1,33 @@
+# ── JARVIS runtime data (never commit the operator's private state) ──
+data/
+logs/
+sessions/
+memory_store/
+skills/*.json
+knowledge/custom_docs/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+.env
+
+# ── python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── editors / OS ──
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
