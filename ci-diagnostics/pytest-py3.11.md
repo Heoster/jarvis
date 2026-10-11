@@ -1,7 +1,7 @@
-# pytest · python 3.12 · aa5b1fca0411f2bff2b373cbe15c400481bae23d
+# pytest · python 3.11 · aa5b1fca0411f2bff2b373cbe15c400481bae23d
 
 ```
-Python 3.12.15
+Python 3.11.17
 runner: Linux
 anyio==4.15.1
 certifi==2026.7.22
@@ -40,13 +40,13 @@ E       assert True is False
 
 tests/test_browser_screen.py:126: AssertionError
 ----------------------------- Captured stderr call -----------------------------
-08:13:28 INFO    browser.launch launching google-chrome (port 9222, headless)
-08:13:29 INFO    browser.launch chrome ready: pid=2448 port=9222
-08:13:29 INFO    browser.harness Chrome launched from terminal: pid=2448 port=9222
+08:13:26 INFO    browser.launch launching google-chrome (port 9222, headless)
+08:13:30 INFO    browser.launch chrome ready: pid=2462 port=9222
+08:13:30 INFO    browser.harness Chrome launched from terminal: pid=2462 port=9222
 ------------------------------ Captured log call -------------------------------
 INFO     jarvis.browser.launch:terminal_launcher.py:230 launching google-chrome (port 9222, headless)
-INFO     jarvis.browser.launch:terminal_launcher.py:265 chrome ready: pid=2448 port=9222
-INFO     jarvis.browser.harness:harness.py:1325 Chrome launched from terminal: pid=2448 port=9222
+INFO     jarvis.browser.launch:terminal_launcher.py:265 chrome ready: pid=2462 port=9222
+INFO     jarvis.browser.harness:harness.py:1325 Chrome launched from terminal: pid=2462 port=9222
 _____________________ test_prebuilt_status_and_description _____________________
 
 vault = PosixPath('/tmp/pytest-of-runner/pytest-0/test_prebuilt_status_and_descr0/Vault')
@@ -78,8 +78,8 @@ INFO     jarvis.tools.obsidian.prebuilt:prebuilt.py:347 dataview: styles.css 3 K
 ____________ test_search_reports_missing_providers_without_hanging _____________
 
 config = {'jarvis': {'version': '1.0.0', 'name': 'JARVIS', 'operator': 'Heoster', 'company': 'CODEEX-AI', ...}, 'llm': {'provid... {'max_budget': 14000, 'system_prompt_budget': 2000, 'tool_definitions_budget': 2500, 'memory_budget': 3500, ...}, ...}
-registry = <jarvis.tools.registry.ToolRegistry object at 0x7f47c0e3f2c0>
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f47c0f8efc0>
+registry = <jarvis.tools.registry.ToolRegistry object at 0x7f51388946d0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5138894fd0>
 
     def test_search_reports_missing_providers_without_hanging(config, registry, monkeypatch):
         """With no keys, no SearXNG and no network, search must explain itself."""
@@ -116,7 +116,7 @@ E             + jina or not 'Title: Example Domain\n\nURL Source: https://exampl
 tests/test_tools.py:281: AssertionError
 ____________ test_headless_browser_tools_report_failure_not_success ____________
 
-registry = <jarvis.tools.registry.ToolRegistry object at 0x7f47c0e3d610>
+registry = <jarvis.tools.registry.ToolRegistry object at 0x7f51389c7690>
 
     def test_headless_browser_tools_report_failure_not_success(registry):
         for name, args in [("browse_open", {"url": "example.com"}),
@@ -130,11 +130,11 @@ registry = <jarvis.tools.registry.ToolRegistry object at 0x7f47c0e3d610>
 >           assert result.ok is False, f"{name} claimed success: {result.content[:80]}"
 E           AssertionError: browser_launch claimed success: ✅ Chrome launched from terminal:
 E             {
-E               "pid": 2788,
+E               "pid": 2801,
 E               "port": 9222,
 E               "running": t
 E           assert True is False
-E            +  where True = ToolResult(ok=True, content='✅ Chrome launched from terminal:\n{\n  "pid": 2788,\n  "port": 9222,\n  "running": true,\...0.0,\n  "tabs": 1,\n  "cdp": "http://127.0.0.1:9222"\n}', error='', elapsed_ms=23, tool='browser_launch', artifacts=[]).ok
+E            +  where True = ToolResult(ok=True, content='✅ Chrome launched from terminal:\n{\n  "pid": 2801,\n  "port": 9222,\n  "running": true,\...0.0,\n  "tabs": 1,\n  "cdp": "http://127.0.0.1:9222"\n}', error='', elapsed_ms=22, tool='browser_launch', artifacts=[]).ok
 
 tests/test_tools.py:342: AssertionError
 ---------------------------- Captured stderr setup -----------------------------
@@ -145,22 +145,22 @@ INFO     jarvis.tools.registry:registry.py:194 loaded 123 tools across 10 catego
 08:13:47 INFO    browser.harness browser engine: cdp (navigation + tabs only (pip install websockets for DOM control))
 08:13:47 WARNING browser.harness engine cdp failed (cannot read DOM: raw CDP needs `pip install websockets` to read the DOM); degrading
 08:13:47 INFO    browser.launch launching google-chrome (port 9222, headless)
-08:13:47 INFO    browser.launch chrome ready: pid=2788 port=9222
+08:13:47 INFO    browser.launch chrome ready: pid=2801 port=9222
 ------------------------------ Captured log call -------------------------------
 INFO     jarvis.browser.harness:harness.py:963 browser engine: cdp (navigation + tabs only (pip install websockets for DOM control))
 WARNING  jarvis.browser.harness:harness.py:978 engine cdp failed (cannot read DOM: raw CDP needs `pip install websockets` to read the DOM); degrading
 INFO     jarvis.browser.launch:terminal_launcher.py:230 launching google-chrome (port 9222, headless)
-INFO     jarvis.browser.launch:terminal_launcher.py:265 chrome ready: pid=2788 port=9222
+INFO     jarvis.browser.launch:terminal_launcher.py:265 chrome ready: pid=2801 port=9222
 __________________ test_search_and_crawl_fail_loudly_offline ___________________
 
-registry = <jarvis.tools.registry.ToolRegistry object at 0x7f47c0e2eb70>
+registry = <jarvis.tools.registry.ToolRegistry object at 0x7f5138811b90>
 
     def test_search_and_crawl_fail_loudly_offline(registry):
         """With no network and no keys, search/crawl must not look successful."""
         search = registry.execute_sync("search_web", {"query": "anything at all"})
 >       assert search.ok is False and search.error
 E       AssertionError: assert (True is False)
-E        +  where True = ToolResult(ok=True, content='**Search results for “anything at all”** _(via ddg)_\n1. **Anything at All - YouTube**\n ...g: searxng request failed: [Errno 111] Connection refused_', error='', elapsed_ms=686, tool='search_web', artifacts=[]).ok
+E        +  where True = ToolResult(ok=True, content='**Search results for “anything at all”** _(via ddg)_\n1. **Anything at All - YouTube**\n ...g: searxng request failed: [Errno 111] Connection refused_', error='', elapsed_ms=663, tool='search_web', artifacts=[]).ok
 
 tests/test_tools.py:364: AssertionError
 ---------------------------- Captured stderr setup -----------------------------
@@ -179,11 +179,11 @@ FAILED tests/test_tools.py::test_read_url_reports_failure_cleanly - AssertionErr
   + jina or not 'Title: Example Domain\n\nURL Source: https://example.com/\n\nPublished Time: Fri, 09 Oct 2026 20:19:47 GMT\n\nMarkdow...servicio; evitar utilizarlo para realizar pruebas o monitoreos.\n\n[Learn more](https://iana.org/help/example-domains)')
 FAILED tests/test_tools.py::test_headless_browser_tools_report_failure_not_success - AssertionError: browser_launch claimed success: ✅ Chrome launched from terminal:
   {
-    "pid": 2788,
+    "pid": 2801,
     "port": 9222,
     "running": t
 assert True is False
- +  where True = ToolResult(ok=True, content='✅ Chrome launched from terminal:\n{\n  "pid": 2788,\n  "port": 9222,\n  "running": true,\...0.0,\n  "tabs": 1,\n  "cdp": "http://127.0.0.1:9222"\n}', error='', elapsed_ms=23, tool='browser_launch', artifacts=[]).ok
+ +  where True = ToolResult(ok=True, content='✅ Chrome launched from terminal:\n{\n  "pid": 2801,\n  "port": 9222,\n  "running": true,\...0.0,\n  "tabs": 1,\n  "cdp": "http://127.0.0.1:9222"\n}', error='', elapsed_ms=22, tool='browser_launch', artifacts=[]).ok
 FAILED tests/test_tools.py::test_search_and_crawl_fail_loudly_offline - AssertionError: assert (True is False)
- +  where True = ToolResult(ok=True, content='**Search results for “anything at all”** _(via ddg)_\n1. **Anything at All - YouTube**\n ...g: searxng request failed: [Errno 111] Connection refused_', error='', elapsed_ms=686, tool='search_web', artifacts=[]).ok
+ +  where True = ToolResult(ok=True, content='**Search results for “anything at all”** _(via ddg)_\n1. **Anything at All - YouTube**\n ...g: searxng request failed: [Errno 111] Connection refused_', error='', elapsed_ms=663, tool='search_web', artifacts=[]).ok
 ```
