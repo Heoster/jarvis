@@ -23,25 +23,17 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ...config import get as cfg_get
 from ...config import load_config
+from .prebuilt import PREBUILT_PLUGINS
 from ...utils.logger import get_logger
 from .vault import ObsidianError, append_under_heading, daily_note, load_notes, resolve_vault
 from .vault import write_note
 
 log = get_logger("tools.obsidian.study")
 
-#: plugins worth having as a student, with the reason (free, all of them)
+#: plugins worth having as a student — the catalogue (with repos, so JARVIS can
+#: install the prebuilt bundles) lives in :mod:`prebuilt`
 RECOMMENDED_PLUGINS: List[Tuple[str, str, str]] = [
-    ("dataview", "Dataview", "live tables of tasks, flashcards and exam countdowns"),
-    ("obsidian-spaced-repetition", "Spaced Repetition", "schedules the `Question :: Answer` "
-                                                        "cards JARVIS writes"),
-    ("obsidian-tasks-plugin", "Tasks", "due dates, priorities and queries for every `- [ ]`"),
-    ("calendar", "Calendar", "one click into any daily note"),
-    ("templater-obsidian", "Templater", "{{date}} / {{title}} templates with scripts"),
-    ("obsidian-git", "Git", "auto-backup the vault (free, offline, version history)"),
-    ("obsidian-excalidraw-plugin", "Excalidraw", "diagrams for physics and chemistry"),
-    ("obsidian-kanban", "Kanban", "board view of the syllabus / revision plan"),
-    ("obsidian-admonition", "Admonition", "pretty callouts for formulas and warnings"),
-    ("cm-editor-syntax-highlight-obsidian", "Syntax Highlight", "legible code blocks"),
+    (plugin.id, plugin.name, plugin.why) for plugin in PREBUILT_PLUGINS
 ]
 
 DEFAULT_SUBJECTS = ["Physics", "Chemistry", "Maths", "English", "Computer Science"]
@@ -475,7 +467,7 @@ def _upsert_daily_targets(vault: Path, day: date, block: str) -> str:
     Running the planner twice must not pile up duplicate blocks, so a previous
     "Target for today" section is *replaced* rather than appended.
     """
-    from .vault import daily_note, render_frontmatter, split_frontmatter
+    from .vault import render_frontmatter, split_frontmatter
 
     note = daily_note(vault, day=day)
     meta, body = split_frontmatter(note.raw)

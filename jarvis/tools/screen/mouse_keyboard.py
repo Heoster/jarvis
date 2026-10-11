@@ -29,9 +29,9 @@ from .backends import ScreenInfo, get_backend
 log = get_logger("screen.input")
 
 __all__ = [
-    "move_cursor", "click_screen_point", "mouse_click", "mouse_double_click",
-    "mouse_drag", "type_text", "press_key", "hotkey", "get_cursor_position",
-    "get_screen_size", "scroll_screen", "bezier_path",
+    "move_cursor", "click_screen_point", "mouse_click", "mouse_drag", "type_text",
+    "press_key", "hotkey", "get_cursor_position", "get_screen_size",
+    "scroll_screen", "bezier_path",
 ]
 
 

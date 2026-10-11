@@ -1,0 +1,88 @@
+name: CD · release
+
+# Continuous delivery: push a version tag and GitHub builds the wheel, the sdist
+# and the installable Obsidian plugin zip, then publishes them as a Release.
+#
+#   git tag v1.0.1 && git push origin v1.0.1
+#
+# The same job can be started by hand from the Actions tab (workflow_dispatch) —
+# it then publishes the release for the tag that triggered the run.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  release:
+    name: build + publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so --generate-notes can diff tags
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Gate on the test suite before anything is published
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pytest tests/ -q
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Prove the wheel installs and runs
+        run: |
+          python -m venv "$RUNNER_TEMP/clean"
+          "$RUNNER_TEMP/clean/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/clean/bin/jarvis" --version
+          "$RUNNER_TEMP/clean/bin/jarvis" doctor
+
+      - name: Stage the release assets
+        run: |
+          mkdir -p release
+          cp dist/* release/
+          cd obsidian-plugin && zip -r "../release/jarvis-obsidian-plugin.zip" jarvis prebuilt
+          cd .. && ls -la release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: release/*
+          retention-days: 90
+
+      - name: Refuse to publish anything that is not a tag
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::This workflow publishes a tag. Re-run it with 'Use workflow from: Tags → <tag>'."
+          exit 1
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          previous="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          args=(--verify-tag --title "JARVIS $GITHUB_REF_NAME" --generate-notes)
+          if [ -n "$previous" ]; then
+            args+=(--notes-start-tag "$previous")
+          fi
+          gh release create "$GITHUB_REF_NAME" release/* "${args[@]}"

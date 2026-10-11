@@ -17,7 +17,8 @@ from ...utils.logger import get_logger
 from ...utils.sanitizer import truncate
 from .flashcards import (GRADES, SrsStore, cards_from_text, collect_cards, due_cards,
                          generate_cards_from_note, review_forecast, schedule)
-from .study import (DEFAULT_SUBJECTS, RECOMMENDED_PLUGINS, build_study_plan,
+from .prebuilt import enabled_prebuilt_ids
+from .study import (DEFAULT_SUBJECTS, build_study_plan,
                     create_study_kit, exam_countdown, install_obsidian_plugin,
                     installed_plugins, jarvis_plugin_status, revision_queue,
                     study_report, subject_overview)
@@ -404,7 +405,7 @@ def obsidian_flashcards_review(note: str, question: str, grade: str = "good") ->
                            "Use obsidian_flashcards_due to see the exact questions.")
         store.get(match)
         schedule(match, grade)
-        store.update(match)
+        store.update(match, grade)
     except ObsidianError as exc:
         return failure(str(exc))
     return (f"✅ [{grade}] {truncate(match.question, 70)} → next review {match.due} "
@@ -539,43 +540,180 @@ def obsidian_exams(within_days: int = 120) -> str:
 
 
 @tool(category="obsidian", timeout=90)
-def obsidian_plugins(install: bool = False) -> str:
-    """Report the vault's Obsidian plugins, and optionally install JARVIS's own.
+def obsidian_study_brief(write: bool = False, day: str = "", limit: int = 6) -> str:
+    """Today's study brief: due cards, overdue tasks, weak topics, exams.
 
-    Also lists the free plugins worth having as a student (Dataview, Spaced
-    Repetition, Tasks, Calendar, Templater, Git, Excalidraw, Kanban).
+    This is the study coach.  It answers "what should I do right now?" with the
+    data already in the vault, and (with ``write=true``) drops the brief into
+    today's daily note under ``### JARVIS brief`` — refreshing it, never
+    duplicating. Use it whenever the student asks what to study or revise.
 
     Args:
-        install: Copy the JARVIS plugin into the vault and enable it
+        write: Also save the brief into the daily note
+        day: Target day (YYYY-MM-DD), defaults to today
+        limit: Maximum items per section
     """
+    from .coach import build_brief, render_brief, write_brief
+
     try:
         vault = _vault()
-        plugins = installed_plugins(vault)
-        status = jarvis_plugin_status(vault)
-        result: Dict[str, Any] = {}
-        if install:
-            result = install_obsidian_plugin(vault)
+        config = load_config()
+        target = date.fromisoformat(day) if day else None
+        brief = build_brief(vault, config, day=target, limit=limit)
+        text = render_brief(brief)
+        if write:
+            written = write_brief(vault, config, brief=brief, day=target)
+            text += f"\n✅ Saved to [[{written['note']}]]"
+        return text
     except ObsidianError as exc:
         return failure(str(exc))
-    lines = [f"**Vault plugins** ({len(plugins)} installed):"]
-    for plugin in plugins:
-        flag = "enabled" if plugin.enabled else "disabled"
-        lines.append(f"- {plugin.name} `{plugin.id}` {plugin.version} — {flag}")
-    if not plugins:
-        lines.append("- none yet")
-    lines.append(f"\n**JARVIS plugin:** {'✅ ' if status['installed'] else ''}"
-                 f"{'installed' if status['installed'] else 'not installed'} "
-                 f"({status['path']})")
-    if install and result:
-        lines.append(f"✅ Installed {len(result['files'])} file(s) → {result['plugin_dir']}")
+    except ValueError as exc:
+        return failure(str(exc))
+
+
+@tool(category="obsidian", timeout=90)
+def obsidian_weak_topics(limit: int = 5, days: int = 30) -> str:
+    """Which subjects and notes the student keeps forgetting (retention analytics).
+
+    Built from every review JARVIS has recorded: lapses, ease, overdue-ness and
+    cards stuck in learning. Use it to recommend what to drill before an exam.
+
+    Args:
+        limit: How many weak topics to list
+        days: Only count reviews from the last N days
+    """
+    from .coach import coach_status, weak_topics
+
+    try:
+        vault = _vault()
+        config = load_config()
+        report = weak_topics(vault, config, limit=limit, days=days)
+        lines = [f"**Weak spots** (last {days} day(s) of reviews):"]
+        if not report:
+            lines.append("- nothing reviewed yet — no weak spots to report")
+        for topic in report:
+            if topic["reviews"]:
+                lines.append(f"- **{topic['subject']} · {topic['topic']}** — "
+                             f"{topic['lapses']} lapse(s) in {topic['reviews']} review(s) "
+                             f"({topic['retention']}% retention), "
+                             f"{topic['due']} due, ease {topic['ease']:.2f}")
+                if topic.get("worst_question"):
+                    lines.append(f"    ↳ worst card: _{topic['worst_question']}_")
+            else:
+                lines.append(f"- **{topic['subject']} · {topic['topic']}** — "
+                             f"{topic['new']} unreviewed card(s), {topic['due']} due")
+        lines.append("")
+        lines.append(coach_status(vault, config).split("\n", 1)[-1])
+        return "\n".join(lines)
+    except ObsidianError as exc:
+        return failure(str(exc))
+
+
+@tool(category="obsidian", timeout=240)
+def obsidian_plugins(action: str = "status", plugins: str = "", offline: bool = False,
+                     tag: str = "", install: bool = False) -> str:
+    """Obsidian plugins: what is installed, and install the prebuilt community ones.
+
+    JARVIS can install the ready-to-run bundles of the free plugins a student
+    needs (Dataview, Spaced Repetition, Tasks, Calendar, Templater, Git,
+    Excalidraw, Kanban, Admonition, Syntax Highlight) straight into the vault —
+    the same release files Obsidian's community store would give you, verified
+    and enabled, no npm or build step.
+
+    Args:
+        action: status · list-prebuilt · install (JARVIS's own plugin) ·
+            install-prebuilt · update (reinstall the newest release of every
+            prebuilt plugin already in the vault)
+        plugins: which prebuilt plugins — "all" (default) or a comma separated
+            list of ids/names, e.g. "dataview, Tasks, spaced"
+        offline: install only from bundles vendored in obsidian-plugin/prebuilt/
+        tag: pin a specific release tag instead of the latest release
+        install: shorthand for action="install" (kept for older callers)
+    """
+    from .prebuilt import (PluginFetchError, describe_prebuilt, install_prebuilt,
+                           prebuilt_status, resolve_selection)
+
+    wanted = (action or "status").strip().lower()
+    if install and wanted == "status":
+        wanted = "install"
+
+    try:
+        vault = _vault()
+    except ObsidianError as exc:
+        return failure(str(exc))
+
+    if wanted in ("status", "list", "prebuilt", "list-prebuilt"):
+        plugins_installed = installed_plugins(vault)
+        status = jarvis_plugin_status(vault)
+        try:
+            rows = prebuilt_status(vault)
+        except Exception as exc:                       # never let reporting fail
+            rows = []
+            log.warning(f"prebuilt status unavailable: {exc}")
+        lines = [f"**Vault plugins** ({len(plugins_installed)} installed):"]
+        for plugin in plugins_installed:
+            flag = "enabled" if plugin.enabled else "disabled"
+            lines.append(f"- {plugin.name} `{plugin.id}` {plugin.version} — {flag}")
+        if not plugins_installed:
+            lines.append("- none yet")
+        lines.append(f"\n**JARVIS plugin:** "
+                     f"{'✅ installed' if status['installed'] else 'not installed'} "
+                     f"({'enabled' if status['enabled'] else 'disabled'}) — {status['path']}")
+        if not status["installed"]:
+            lines.append("↳ install with `obsidian_plugins(action=\"install\")`")
+        lines.append("")
+        lines.append(describe_prebuilt(rows))
+        lines.append("\n→ install any of them: `obsidian_plugins(action=\"install-prebuilt\", "
+                     "plugins=\"all\")`")
+        return "\n".join(lines)
+
+    if wanted in ("install", "jarvis"):
+        try:
+            result = install_obsidian_plugin(vault)
+        except ObsidianError as exc:
+            return failure(str(exc))
+        return (f"✅ JARVIS plugin installed ({len(result['files'])} files) → "
+                f"{result['plugin_dir']}\n↳ {result['restart_hint']}")
+
+    if wanted not in ("install-prebuilt", "install_prebuilt", "prebuilt-install", "update"):
+        return failure(f"unknown action '{action}' — use status, list-prebuilt, install, "
+                       "install-prebuilt or update")
+
+    if wanted == "update":
+        selection, unknown = resolve_selection(plugins or "all")
+        if not plugins:
+            have = set(enabled_prebuilt_ids(vault))
+            selection = [plugin for plugin in selection if plugin.id in have]
+            if not selection:
+                return ("Nothing to update — no prebuilt plugin is installed yet. "
+                        "Install some with action=\"install-prebuilt\".")
+    else:
+        selection, unknown = resolve_selection(plugins or "all")
+
+    if not selection:
+        return failure(f"no matching plugin(s): {', '.join(unknown) or plugins!r} — "
+                       "call action=\"list-prebuilt\" for the ids")
+
+    try:
+        result = install_prebuilt(vault, selection, enable=True, tag=tag, offline=offline)
+    except ObsidianError as exc:
+        return failure(str(exc))
+
+    lines = []
+    for item in result["installed"]:
+        extra = f" · {item['source']}" + (f" {item['tag']}" if item["tag"] else "")
+        flag = "enabled" if item["enabled"] else "installed (enable it in Obsidian)"
+        lines.append(f"✅ {item['name']} v{item['version']} → {flag} ({extra})")
+        if item.get("warning"):
+            lines.append(f"   ↳ {item['warning']}")
+    for item in result["failed"]:
+        lines.append(f"⚠ {item['name']}: {item['error']}")
+    if unknown:
+        lines.append(f"⚠ unknown plugin(s): {', '.join(unknown)}")
+    if result["installed"]:
         lines.append(f"↳ {result['restart_hint']}")
-    elif not status["installed"]:
-        lines.append("↳ install with `obsidian_plugins(install=true)`")
-    lines.append("\n**Recommended for studying (all free):**")
-    have = {plugin.id for plugin in plugins}
-    for plugin_id, name, why in RECOMMENDED_PLUGINS:
-        mark = "✓" if plugin_id in have else "·"
-        lines.append(f"  {mark} {name} — {why}")
+    if not result["installed"]:
+        return failure("\n".join(lines) or "nothing was installed")
     return "\n".join(lines)
 
 
@@ -583,6 +721,6 @@ OBSIDIAN_TOOLS = [
     obsidian_status, obsidian_search, obsidian_list_notes, obsidian_read_note,
     obsidian_write_note, obsidian_daily_note, obsidian_tasks, obsidian_links,
     obsidian_flashcards_add, obsidian_flashcards_due, obsidian_flashcards_review,
-    obsidian_revision_queue, obsidian_study_kit, obsidian_study_plan, obsidian_exams,
-    obsidian_plugins,
+    obsidian_revision_queue, obsidian_study_brief, obsidian_weak_topics,
+    obsidian_study_kit, obsidian_study_plan, obsidian_exams, obsidian_plugins,
 ]

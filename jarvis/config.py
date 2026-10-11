@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 __all__ = [
     "PROJECT_ROOT", "load_config", "get_config", "reload_config",
     "get_env", "dotenv_values", "CONFIG_ENV_PREFIX",
+    "parse_yaml_text", "dump_yaml",
 ]
 
 CONFIG_ENV_PREFIX = "JARVIS__"
@@ -53,6 +54,7 @@ DEFAULTS: Dict[str, Any] = {
                         "backoff_base_seconds": 2.0, "backoff_max_seconds": 120.0,
                         "verify_after_fallback": True},
     },
+    "brain": {"system_prompt": "universal", "system_prompt_budget": 12000},
     "context": {
         "max_budget": 14000, "system_prompt_budget": 2000,
         "tool_definitions_budget": 2500, "memory_budget": 3500,
@@ -165,6 +167,93 @@ def get_env(key: str, default: str = "") -> str:
 
 
 # ── Tiny YAML fallback ──────────────────────────────────────────────────────
+# ── YAML helpers (PyYAML when present, the mini parser otherwise) ───────────
+# vault.py needs these for Obsidian frontmatter, and the project must keep
+# working on a bare Python install, so the fallback is not optional.
+try:                                        # pragma: no cover - import shim
+    import yaml as _pyyaml  # type: ignore
+    _HAS_YAML = True
+except Exception:                           # pragma: no cover
+    _pyyaml = None  # type: ignore
+    _HAS_YAML = False
+
+
+def parse_yaml_text(text: str) -> Any:
+    """Parse YAML text, falling back to the built-in mini parser."""
+    if _HAS_YAML:
+        try:
+            return _pyyaml.safe_load(text)          # type: ignore[union-attr]
+        except Exception as exc:
+            from .utils.logger import get_logger
+
+            get_logger("config").debug(f"PyYAML could not parse ({exc}); "
+                                       "using the mini parser")
+    try:
+        return _mini_yaml("\n".join(line for line in text.splitlines()
+                                    if not line.lstrip().startswith("#")))
+    except Exception:
+        return {}
+
+
+def _mini_yaml_dump(data: Any, indent: int = 0) -> str:
+    """Render the subset of YAML Obsidian frontmatter uses."""
+    pad = "  " * indent
+    lines: list[str] = []
+
+    def scalar(value: Any) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        text = str(value)
+        if text == "" or text.strip() != text or any(ch in text for ch in ":#[]{}&*!|>%@`\"'\n"):
+            return '"' + text.replace('"', '\\"') + '"'
+        return text
+
+    if isinstance(data, Mapping):
+        for key, value in data.items():
+            if isinstance(value, Mapping):
+                lines.append(f"{pad}{key}:")
+                lines.append(_mini_yaml_dump(value, indent + 1))
+            elif isinstance(value, (list, tuple)):
+                if not value:
+                    lines.append(f"{pad}{key}: []")
+                elif all(not isinstance(item, (Mapping, list, tuple)) for item in value):
+                    lines.append(f"{pad}{key}: [{', '.join(scalar(item) for item in value)}]")
+                else:
+                    lines.append(f"{pad}{key}:")
+                    for item in value:
+                        if isinstance(item, (Mapping, list, tuple)):
+                            lines.append(f"{pad}- ")
+                            lines.append(_mini_yaml_dump(item, indent + 1))
+                        else:
+                            lines.append(f"{pad}- {scalar(item)}")
+            else:
+                lines.append(f"{pad}{key}: {scalar(value)}")
+        return "\n".join(line for line in lines if line != "")
+    if isinstance(data, (list, tuple)):
+        for item in data:
+            lines.append(f"{pad}- {scalar(item)}")
+        return "\n".join(lines)
+    return f"{pad}{scalar(data)}"
+
+
+def dump_yaml(data: Mapping[str, Any]) -> str:
+    """Serialise a mapping for YAML output (frontmatter, ``config show``)."""
+    if _HAS_YAML:
+        try:
+            return _pyyaml.safe_dump(dict(data), sort_keys=False, allow_unicode=True,
+                                     default_flow_style=False).strip()  # type: ignore
+        except Exception as exc:                # pragma: no cover - PyYAML internals
+            from .utils.logger import get_logger
+
+            get_logger("config").debug(f"PyYAML could not dump ({exc}); "
+                                       "using the mini writer")
+    return _mini_yaml_dump(dict(data)).strip()
+
+
 def _mini_yaml(text: str) -> Dict[str, Any]:
     """Parse the flat/nested mapping subset of YAML that JARVIS configs use.
 

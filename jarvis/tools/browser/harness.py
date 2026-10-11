@@ -161,6 +161,12 @@ class BaseEngine:
     async def tabs(self) -> List[Dict[str, str]]:
         return []
 
+    async def switch_tab(self, target: Any) -> Dict[str, Any]:
+        raise HarnessError(f"{self.name}: this engine cannot switch tabs")
+
+    async def close_tab(self, target: Any) -> Dict[str, Any]:
+        raise HarnessError(f"{self.name}: this engine cannot close tabs")
+
     async def back(self) -> bool:
         return False
 
@@ -361,6 +367,45 @@ class PlaywrightEngine(BaseEngine):
                 continue
         return out
 
+    async def _page_for(self, target: Any):
+        pages = list(self._context.pages)
+        if isinstance(target, bool):
+            raise HarnessError("tab target must be an index or a title/url fragment")
+        if isinstance(target, int) or (isinstance(target, str) and target.strip().isdigit()):
+            index = int(target)
+            if index < 0 or index >= len(pages):
+                raise HarnessError(f"there is no tab {index} (open tabs: {len(pages)})")
+            return pages[index]
+        needle = str(target).strip().lower()
+        for page in pages:
+            if needle and needle in (page.url or "").lower():
+                return page
+        for page in pages:
+            try:
+                title = (await page.title()).lower()
+            except Exception:
+                continue
+            if needle and needle in title:
+                return page
+        raise HarnessError(f"no open tab matches {target!r}")
+
+    async def switch_tab(self, target: Any) -> Dict[str, Any]:
+        page = await self._page_for(target)
+        await page.bring_to_front()
+        self._page = page
+        return {"index": self._context.pages.index(page), "url": page.url,
+                "title": await page.title(), "engine": self.name}
+
+    async def close_tab(self, target: Any) -> Dict[str, Any]:
+        page = await self._page_for(target)
+        index = self._context.pages.index(page)
+        was_current = page is self._page
+        await page.close()
+        if was_current and self._context.pages:
+            self._page = self._context.pages[min(index, len(self._context.pages) - 1)]
+        return {"closed": index, "remaining": len(self._context.pages),
+                "active_url": self._page.url if self._page else "", "engine": self.name}
+
     async def back(self) -> bool:
         await self._page.go_back()
         return True
@@ -549,6 +594,45 @@ class SeleniumEngine(BaseEngine):
         self._driver.switch_to.window(current)
         return out
 
+    def _window_for(self, target: Any) -> str:
+        handles = self._driver.window_handles
+        if isinstance(target, int) or (isinstance(target, str) and str(target).strip().isdigit()):
+            index = int(target)
+            if index < 0 or index >= len(handles):
+                raise HarnessError(f"there is no tab {index} (open tabs: {len(handles)})")
+            return handles[index]
+        needle = str(target).strip().lower()
+        current = self._driver.current_window_handle
+        for handle in handles:
+            try:
+                self._driver.switch_to.window(handle)
+            except Exception:
+                continue
+            if needle and (needle in self._driver.current_url.lower()
+                           or needle in self._driver.title.lower()):
+                return handle
+        self._driver.switch_to.window(current)
+        raise HarnessError(f"no open tab matches {target!r}")
+
+    async def switch_tab(self, target: Any) -> Dict[str, Any]:
+        handle = self._window_for(target)
+        self._driver.switch_to.window(handle)
+        return {"index": self._driver.window_handles.index(handle),
+                "url": self._driver.current_url, "title": self._driver.title,
+                "engine": self.name}
+
+    async def close_tab(self, target: Any) -> Dict[str, Any]:
+        handle = self._window_for(target)
+        handles = self._driver.window_handles
+        self._driver.switch_to.window(handle)
+        self._driver.close()
+        remaining = self._driver.window_handles
+        if remaining:
+            self._driver.switch_to.window(remaining[0])
+        return {"closed": handles.index(handle), "remaining": len(remaining),
+                "active_url": self._driver.current_url if remaining else "",
+                "engine": self.name}
+
     async def back(self) -> bool:
         self._driver.back()
         return True
@@ -681,8 +765,44 @@ class CDPEngine(BaseEngine):
     async def tabs(self) -> List[Dict[str, str]]:
         if not self.client:
             return []
-        return [{"index": str(i), "title": t.title, "url": t.url}
+        current = self.client.current()
+        return [{"index": str(i), "title": t.title, "url": t.url,
+                 "active": str(bool(current and t.id == current.id))}
                 for i, t in enumerate(self.client.targets())]
+
+    def _target_for(self, target: Any):
+        assert self.client is not None
+        targets = self.client.targets()
+        if isinstance(target, int) or (isinstance(target, str) and str(target).strip().isdigit()):
+            index = int(target)
+            if index < 0 or index >= len(targets):
+                raise HarnessError(f"there is no tab {index} (open tabs: {len(targets)})")
+            return targets[index]
+        needle = str(target).strip().lower()
+        for item in targets:
+            if needle and (needle in (item.url or "").lower()
+                           or needle in (item.title or "").lower()):
+                return item
+        raise HarnessError(f"no open tab matches {target!r}")
+
+    async def switch_tab(self, target: Any) -> Dict[str, Any]:
+        item = self._target_for(target)
+        self.client.switch_to(item)
+        return {"index": self.client.targets().index(item), "url": item.url,
+                "title": item.title, "engine": self.name}
+
+    async def close_tab(self, target: Any) -> Dict[str, Any]:
+        item = self._target_for(target)
+        index = self.client.targets().index(item)
+        closed = self.client.close_tab(item.id)
+        if not closed:
+            raise HarnessError(f"could not close tab {index} over the DevTools protocol")
+        if websocket_available():
+            remaining = self.client.targets()
+            if remaining:
+                self.client.connect(remaining[min(index, len(remaining) - 1)])
+        return {"closed": index, "remaining": len(self.client.targets()),
+                "engine": self.name}
 
     async def current_url(self) -> str:
         target = self.client.current() if self.client else None
@@ -1079,6 +1199,18 @@ class BrowserHarness:
     async def tabs(self) -> Dict[str, Any]:
         engine = await self.ensure()
         return {"ok": True, "tabs": await engine.tabs(), "engine": self.engine_name}
+
+    async def switch_tab(self, target: Any) -> Dict[str, Any]:
+        engine = await self.ensure()
+        result = await engine.switch_tab(target)
+        self._log("switch_tab", {"target": str(target), "engine": self.engine_name})
+        return {"ok": True, "engine": self.engine_name, **result}
+
+    async def close_tab(self, target: Any) -> Dict[str, Any]:
+        engine = await self.ensure()
+        result = await engine.close_tab(target)
+        self._log("close_tab", {"target": str(target), "engine": self.engine_name})
+        return {"ok": True, "engine": self.engine_name, **result}
 
     async def current_url(self) -> str:
         engine = await self.ensure()

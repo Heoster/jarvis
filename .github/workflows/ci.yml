@@ -1,0 +1,154 @@
+name: CI
+
+# Runs on every push to main and to the Arena working branches, on every pull
+# request, and on demand. No secrets, no network services and no paid runners are
+# needed: the whole suite is hermetic (stub provider, fake browser, temp vaults).
+
+on:
+  push:
+    branches:
+      - main
+      - "arena/**"      # the Arena session branch: arena/7d76a2ec-jarvis
+      - "arena*"        # any working branch that starts with "arena", e.g. arena-works
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # ── fast gates: real bugs in the code, before spending minutes on the matrix ──
+  lint:
+    name: lint · python 3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: python -m pip install "ruff>=0.4"
+
+      - name: Every module must compile
+        run: python -m compileall -q jarvis
+
+      - name: Fail on real bugs (undefined names, shadowed defs, dead exports, except-chaining)
+        # Narrow, deliberate selection: these are always wrong. Style rules stay advisory.
+        run: |
+          ruff check --select F821,F822,F811,F823,F841,B023,B904,E713,E9 \
+            --output-format concise .
+
+      - name: Full lint report (advisory — the backlog is still being worked down)
+        continue-on-error: true
+        run: ruff check . --statistics
+
+  # ── the suite: hermetic, ~20 s per job, so three Pythons are cheap ──────────
+  tests:
+    name: tests · py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install JARVIS with the dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run the test suite
+        run: python -m pytest tests/ -q
+
+      - name: CLI smoke — the wiring must hold up outside pytest
+        run: |
+          python -m jarvis doctor
+          python -m jarvis tools | head -30
+          python -m jarvis agents
+          python -m jarvis prompt --budget 3000 --out "$RUNNER_TEMP/prompt.txt"
+          python -m jarvis call media_history '{"day":"yesterday"}'
+
+      - name: Keep the generated prompt for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: system-prompt-py${{ matrix.python }}
+          path: ${{ runner.temp }}/prompt.txt
+          retention-days: 7
+
+  # ── the Windows path is where the screen tools actually run — advisory for now ─
+  tests-windows:
+    name: tests · windows · py3.12 (advisory)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - run: python -m pytest tests/ -q
+
+  # ── packaging: a wheel that installs clean is part of the product ───────────
+  package:
+    name: package · wheel + sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Prove the wheel installs and runs in a clean environment
+        run: |
+          python -m venv "$RUNNER_TEMP/clean"
+          "$RUNNER_TEMP/clean/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/clean/bin/jarvis" --version
+          "$RUNNER_TEMP/clean/bin/jarvis" doctor
+          "$RUNNER_TEMP/clean/bin/jarvis" prompt --budget 1800 --out "$RUNNER_TEMP/clean-prompt.txt"
+
+      - name: Stage release files (the Obsidian plugin ships next to the wheel)
+        run: |
+          mkdir -p release
+          cp dist/* release/
+          cd obsidian-plugin && zip -r "../release/jarvis-obsidian-plugin.zip" jarvis prebuilt
+          cd .. && ls -la release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: release/*
+          retention-days: 30

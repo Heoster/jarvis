@@ -26,8 +26,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
-import yaml
-
+from ...config import dump_yaml, parse_yaml_text
 from ...config import get as cfg_get
 from ...config import load_config
 from ...utils.logger import get_logger
@@ -163,7 +162,7 @@ def split_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
         return {}, text
     block = "\n".join(lines[1:end])
     try:
-        data = yaml.safe_load(block) or {}
+        data = parse_yaml_text(block) or {}
     except Exception as exc:  # a broken frontmatter must not hide the note
         log.debug(f"frontmatter parse failed ({exc}); treating as text")
         return {}, text
@@ -175,8 +174,7 @@ def split_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
 def render_frontmatter(data: Mapping[str, Any]) -> str:
     if not data:
         return ""
-    dumped = yaml.safe_dump(dict(data), sort_keys=False, allow_unicode=True,
-                            default_flow_style=False).strip()
+    dumped = dump_yaml(data)
     return f"---\n{dumped}\n---\n"
 
 
@@ -537,7 +535,7 @@ def toggle_task(vault: Path, note_ref: str, line: int, *, done: Optional[bool] =
     if not match:
         raise ObsidianError(f"line {line} of {note.rel} is not a task")
     marker = match.group(1)
-    new_state = (not marker in "xX") if done is None else bool(done)
+    new_state = (marker not in "xX") if done is None else bool(done)
     lines[line - 1] = TASK_RE.sub(
         lambda m: f"{m.group(0)[:m.start(1) - m.start(0)]}{'x' if new_state else ' '}"
                   f"{m.group(0)[m.end(1) - m.start(0):]}",
@@ -563,6 +561,55 @@ def expand_template(text: str, *, title: str, when: date) -> str:
                       lambda m: when.strftime(m.group(1) or "%Y-%m-%d"), expanded)
     expanded = expanded.replace("{{time}}", datetime.now().strftime("%H:%M"))
     return expanded
+
+
+def upsert_section(vault: Path, ref: str, heading: str, block: str, *,
+                   level: int = 3, after: str = "") -> Note:
+    """Write ``block`` under ``heading``, *replacing* any previous version.
+
+    ``append_under_heading`` always inserts, so calling it twice duplicates the
+    section.  Reports (the study brief, weekly reviews) are regenerated often,
+    so they replace their section instead: the old block runs from the heading
+    up to the next heading of the same or higher level.
+    """
+    note = read_note(vault, ref)
+    meta, body = split_frontmatter(note.raw)
+    lines = body.splitlines()
+    wanted = heading.strip().lower()
+    new_block = block.strip().splitlines()
+
+    start = next((index for index, line in enumerate(lines)
+                  if (match := HEADING_RE.match(line))
+                  and match.group(2).strip().lower() == wanted), None)
+    if start is not None:
+        target_level = len(HEADING_RE.match(lines[start]).group(1))
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            match = HEADING_RE.match(lines[index])
+            if match and len(match.group(1)) <= target_level:
+                end = index
+                break
+        lines[start:end] = new_block + [""]
+    else:
+        insert_at = len(lines)
+        if after:
+            wanted_anchor = after.strip().lower()
+            section = next((index for index, line in enumerate(lines)
+                            if (match := HEADING_RE.match(line))
+                            and match.group(2).strip().lower() == wanted_anchor), None)
+            if section is not None:
+                anchor_level = len(HEADING_RE.match(lines[section]).group(1))
+                insert_at = len(lines)
+                for index in range(section + 1, len(lines)):
+                    match = HEADING_RE.match(lines[index])
+                    if match and len(match.group(1)) <= anchor_level:
+                        insert_at = index
+                        break
+        lines[insert_at:insert_at] = ["", ""] + new_block + [""]
+
+    note.path.write_text(render_frontmatter(meta) + "\n".join(lines).rstrip("\n") + "\n",
+                         encoding="utf-8")
+    return parse_note(note.path, vault)
 
 
 def daily_note(vault: Path, *, day: Optional[date] = None, create: bool = True,

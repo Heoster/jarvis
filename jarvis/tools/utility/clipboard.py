@@ -12,7 +12,7 @@ from ..base import failure, tool
 
 log = get_logger("utility.clipboard")
 
-__all__ = ["get_clipboard", "set_clipboard", "CLIPBOARD_TOOLS"]
+__all__ = ["clipboard_get", "clipboard_set", "CLIPBOARD_TOOLS"]
 
 
 def _backends() -> Tuple[Optional[list[str]], Optional[list[str]]]:

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..persona import build_system_prompt
+from .system_prompt import build_universal_prompt, collect_environment
 from ..utils.logger import get_logger
 from .api_manager import APIManager, get_api_manager
 from .context_manager import ContextManager
@@ -117,6 +118,9 @@ class Brain:
         self.trace = ThinkingTrace()
         self._memory_block: str = ""
         self._knowledge_block: str = ""
+        self._session_block: str = ""
+        self.environment: Optional[Any] = None
+        self.tool_registry: Optional[Any] = None
         self.model = str(self.llm_cfg.get("model", "hermes3:3b"))
         log.info(f"Brain ready: provider={self.api.llm_cfg.get('provider', 'auto')}, "
                  f"model={self.model}, budget={self.context.max_budget} tokens")
@@ -235,10 +239,23 @@ class Brain:
     def tool_schema(self) -> List[Dict[str, Any]]:
         return [t.schema() if hasattr(t, "schema") else t for t in self.bound_tools]
 
+    def attach_registry(self, registry: Any) -> None:
+        """Remember the tool registry (used for environment facts in the prompt)."""
+        self.tool_registry = registry
+
     # ── prompting ──────────────────────────────────────────────────────────
     def set_context_blocks(self, *, memory: str = "", knowledge: str = "") -> None:
         self._memory_block = memory
         self._knowledge_block = knowledge
+
+    def prompt_style(self) -> str:
+        """``universal`` (default) builds the full contract prompt; ``persona`` is the
+        older, shorter one (kept because it is cheaper in tokens)."""
+        style = str((self.config.get("brain") or {}).get("system_prompt", "universal"))
+        return style if style in ("universal", "persona") else "universal"
+
+    def set_session_context(self, session: str = "") -> None:
+        self._session_block = session.strip()
 
     def system_prompt(self, *, memory: str = "", knowledge: str = "",
                       extra: str = "") -> str:
@@ -246,8 +263,23 @@ class Brain:
             "memory": memory or self._memory_block,
             "knowledge": knowledge or self._knowledge_block,
         }
-        return build_system_prompt(memories=blocks["memory"],
-                                   knowledge=blocks["knowledge"], extra=extra)
+        if self.prompt_style() == "persona":
+            return build_system_prompt(memories=blocks["memory"],
+                                       knowledge=blocks["knowledge"], extra=extra)
+        budget = int((self.config.get("brain") or {}).get("system_prompt_budget", 9000))
+        if getattr(self, "environment", None) is None:
+            self.environment = collect_environment(self.config, registry=self.tool_registry)
+        self.environment.model = self.model or self.environment.model
+        return build_universal_prompt(
+            environment=self.environment,
+            config=self.config,
+            tools=self.bound_tools,
+            memories=blocks["memory"],
+            knowledge=blocks["knowledge"],
+            session=getattr(self, "_session_block", ""),
+            extra=extra,
+            max_chars=budget,
+        )
 
     def build_messages(self, history: Sequence[Any], user_input: str, *,
                        system_extra: str = "", memory: str = "",

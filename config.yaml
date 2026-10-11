@@ -16,6 +16,14 @@ jarvis:
   # could bill you will ever be called while this is true.
   cost_policy: "free"
 
+# ── Prompting ───────────────────────────────────────────────────────────────
+brain:
+  # universal = full contract prompt (identity, runtime, tool protocol, memory
+  # rules, playbooks) — see jarvis/core/system_prompt.py
+  # persona   = the older, shorter prompt (cheaper in tokens)
+  system_prompt: "universal"
+  system_prompt_budget: 12000      # hard character ceiling for the system prompt
+
 # ── LLM Backend + Auto-Fallback Chain ───────────────────────────────────────
 llm:
   provider: "auto"                 # auto | ollama | groq | cerebras | openrouter | gemini | hf | stub
@@ -217,11 +225,25 @@ obsidian:
     topics_per_day: 2              # study-plan density
     session_minutes: 45
     final_days_for_full_revision: 2
+  coach:                           # `jarvis coach …` — brief + retention analytics
+    times: ["19:30"]               # when the brief is written to the daily note
+    notify: true                   # desktop notification
+    speak: false                   # read the headline aloud (espeak-ng / say)
+    weekly_review: true            # also write a review note on Sundays
+    window_days: 30                # retention window for weak-topic analytics
+    stale_days: 7                  # "gone quiet" after N days without a review
+    max_items: 6                   # items per brief section
+    brief_level: 3                 # heading level inside the daily note
   srs:
     database: "./data/obsidian_srs.json"   # spaced-repetition schedule (SM-2)
     inline_markers: false          # also write <!--SR:…--> for the SR plugin
   plugin:
     source_dir: "obsidian-plugin/jarvis"   # the JARVIS Obsidian plugin to install
+
+# ── Browser / media ─────────────────────────────────────────────────────────
+browser:
+  media:
+    history_file: "./data/media_history.json"   # what was played, and when
 
 # ── Sessions ────────────────────────────────────────────────────────────────
 sessions:

@@ -21,7 +21,8 @@ import json
 import time
 import typing
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, get_args, get_origin
+from typing import (Any, Callable, Dict, List, Mapping, Optional, Sequence,
+                    Tuple, get_args, get_origin)
 
 from ..utils.logger import get_logger
 from ..utils.sanitizer import truncate

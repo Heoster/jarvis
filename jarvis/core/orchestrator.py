@@ -109,6 +109,34 @@ class Orchestrator:
         self.last_result: Optional[TurnResult] = None
         self.turn_count = 0
 
+    def _session_context(self) -> str:
+        """Live facts the model should know this turn (session, tools, memory)."""
+        bits: List[str] = []
+        try:
+            session = getattr(self.memory.sessions, "current_session_id", "")
+            if session:
+                bits.append(f"- Session: {session} (turn {self.turn_count + 1})")
+            stats = self.memory.stats()
+            tiers = stats.get("tiers") or {}
+            bits.append("- Memory now: " + ", ".join(f"{name} {count}"
+                                                     for name, count in tiers.items())
+                         + f" · {stats.get('sessions', {}).get('sessions', 0)} stored "
+                           f"transcript(s)")
+            recent = stats.get("recent_turns") or []
+            if recent:
+                bits.append("- Recent turns: " + " | ".join(
+                    str(item)[:80] for item in recent[-3:]))
+        except Exception as exc:                            # never break a turn
+            log.debug(f"session context unavailable: {exc}")
+        try:
+            bits.append(f"- Tools bound: {len(self.brain.bound_tools)} of "
+                        f"{len(self.registry.get_all_tools())}")
+        except Exception:
+            pass
+        bits.append(f"- Now: {datetime.now().strftime('%Y-%m-%d %H:%M')} local "
+                    f"(Asia/Kolkata) · server time {datetime.now().strftime('%H:%M')}")
+        return "\n".join(bits)
+
     # ── lifecycle ──────────────────────────────────────────────────────────
     def initialize(self, *, ingest_knowledge: bool = True,
                    resume_session: bool = True, verbose: bool = False) -> Dict[str, Any]:
@@ -116,9 +144,11 @@ class Orchestrator:
         if not self.registry.get_all_tools():
             self.registry.load_all_default_tools(self.config, verbose=verbose)
         self.brain.bind_tools(self.registry.get_all_tools())
+        self.brain.attach_registry(self.registry)
         report = self.memory.bootstrap(ingest_knowledge=ingest_knowledge,
                                        resume_session=resume_session)
         self.session_started = True
+        self.brain.set_session_context(self._session_context())
         try:
             self.brain.api.start_auto_heal()
         except Exception:

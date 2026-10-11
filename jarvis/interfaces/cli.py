@@ -15,8 +15,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import click
@@ -136,7 +138,7 @@ def chat(context_file: str, verbose: bool) -> None:
         orchestrator = _build_orchestrator(cfg, verbose=verbose)
     except Exception as exc:
         say(f"❌ startup failed: {exc}", "bold red")
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
     extra_context = ""
     if context_file:
@@ -389,7 +391,7 @@ def _obsidian_errors(func):
             return func(*args, **kwargs)
         except (ObsidianError, ValueError) as exc:
             say(f"⚠ {exc}", "red")
-            raise click.exceptions.Exit(1)
+            raise click.exceptions.Exit(1) from exc
     return wrapper
 
 # ── obsidian (notes · flashcards · study planning) ──────────────────────────
@@ -609,7 +611,7 @@ def obsidian_cards(ctx: click.Context, action: str, args: tuple, note: str, grad
             return
         store.get(match)
         schedule(match, grade)
-        store.update(match)
+        store.update(match, grade)
         say(f"✅ [{grade}] next review {match.due} (interval {match.interval:.0f}d)")
 
 
@@ -666,12 +668,27 @@ def obsidian_queue(ctx: click.Context, limit: int) -> None:
 
 @obsidian.command("plugins")
 @click.option("--install", is_flag=True, help="Install/enable the JARVIS plugin.")
+@click.option("--install-prebuilt", "install_prebuilt_spec", default="",
+              help='Install prebuilt community plugins: "all" or ids/names, comma separated.')
+@click.option("--list-prebuilt", is_flag=True,
+              help="Show the prebuilt catalogue with install status.")
+@click.option("--update", is_flag=True,
+              help="Reinstall the newest release of every prebuilt plugin already installed.")
+@click.option("--offline", is_flag=True,
+              help="Use only bundles vendored in obsidian-plugin/prebuilt/.")
+@click.option("--tag", default="", help="Pin a release tag (default: latest release).")
+@click.option("--checked", is_flag=True,
+              help="Also ask GitHub for the newest release of each prebuilt plugin.")
 @click.pass_context
 @_obsidian_errors
-def obsidian_plugins_cmd(ctx: click.Context, install: bool) -> None:
-    """List vault plugins; install the JARVIS Obsidian plugin."""
-    from ..tools.obsidian.study import (RECOMMENDED_PLUGINS, install_obsidian_plugin,
-                                        installed_plugins, jarvis_plugin_status)
+def obsidian_plugins_cmd(ctx: click.Context, install: bool, install_prebuilt_spec: str,
+                         list_prebuilt: bool, update: bool, offline: bool, tag: str,
+                         checked: bool) -> None:
+    """List vault plugins; install the JARVIS plugin or prebuilt community plugins."""
+    from ..tools.obsidian.prebuilt import (describe_prebuilt, install_prebuilt,
+                                           prebuilt_status, resolve_selection)
+    from ..tools.obsidian.study import (install_obsidian_plugin, installed_plugins,
+                                        jarvis_plugin_status)
 
     _cfg, path = _obsidian_vault(ctx.obj.get("vault", "") if ctx.obj else "")
     plugins = installed_plugins(path)
@@ -681,6 +698,7 @@ def obsidian_plugins_cmd(ctx: click.Context, install: bool) -> None:
         say(f"  {plugin.name} ({plugin.id}) {plugin.version} — {state}")
     if not plugins:
         say("  none yet")
+
     if install:
         result = install_obsidian_plugin(path)
         say(f"✅ JARVIS plugin installed → {result['plugin_dir']}")
@@ -688,10 +706,36 @@ def obsidian_plugins_cmd(ctx: click.Context, install: bool) -> None:
     status = jarvis_plugin_status(path)
     say(f"JARVIS plugin: {'installed' if status['installed'] else 'not installed'} "
         f"({'enabled' if status['enabled'] else 'disabled'})")
-    say("\nRecommended (all free):")
-    have = {plugin.id for plugin in plugins}
-    for plugin_id, name, why in RECOMMENDED_PLUGINS:
-        say(f"  {'✓' if plugin_id in have else '·'} {name} — {why}")
+
+    if install_prebuilt_spec or update:
+        selection, unknown = resolve_selection(install_prebuilt_spec or "all")
+        if update and not install_prebuilt_spec:
+            from ..tools.obsidian.prebuilt import enabled_prebuilt_ids
+            have = set(enabled_prebuilt_ids(path))
+            selection = [plugin for plugin in selection if plugin.id in have]
+            if not selection:
+                say("\nNothing to update — no prebuilt plugin is installed yet.")
+        for name in unknown:
+            say(f"⚠ unknown plugin: {name}")
+        if selection:
+            say(f"\nInstalling {len(selection)} prebuilt plugin(s)…")
+            result = install_prebuilt(path, selection, enable=True, tag=tag, offline=offline)
+            for item in result["installed"]:
+                detail = f"{item['source']}" + (f" {item['tag']}" if item["tag"] else "")
+                flag = "enabled" if item["enabled"] else "installed (enable in Obsidian)"
+                say(f"  ✅ {item['name']} v{item['version']} — {flag} · {detail}")
+                if item.get("warning"):
+                    say(f"     ↳ {item['warning']}")
+            for item in result["failed"]:
+                say(f"  ⚠ {item['name']}: {item['error']}")
+            if result["installed"]:
+                say(f"↳ {result['restart_hint']}")
+        return
+
+    say("")
+    say(describe_prebuilt(prebuilt_status(path, check_releases=checked)))
+    say("\n_install: `python -m jarvis obsidian plugins --install-prebuilt all` "
+        "(add --offline to use vendored bundles only)_")
 
 
 @obsidian.command("kit")
@@ -727,6 +771,228 @@ def obsidian_exams_cmd(ctx: click.Context, days: int) -> None:
         return
     for exam in exams:
         say(f"  {exam['exam']} — {exam['days_left']} day(s) left ({exam['date']})")
+
+
+# ── run one tool directly ──────────────────────────────────────────────────
+@main.command(name="call")
+@click.argument("tool_name")
+@click.argument("args", default="{}", required=False)
+@click.option("--timeout", default=0.0, type=float, help="Seconds before it is called off.")
+def call(tool_name: str, args: str, timeout: float) -> None:
+    """Run one tool directly — the fastest way to check a real click or tab.
+
+    \b
+    Examples:
+      python -m jarvis call media_history '{"day":"yesterday"}'
+      python -m jarvis call page_type '{"selector":"input#search","text":"hello"}'
+      python -m jarvis call page_tab_switch '{"target":"results"}'
+    """
+    from ..tools.registry import ToolRegistry
+
+    try:
+        payload = json.loads(args or "{}")
+    except json.JSONDecodeError as exc:
+        raise click.BadParameter(f"arguments must be JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise click.BadParameter("arguments must be a JSON object")
+
+    cfg = load_config()
+    registry = ToolRegistry()
+    registry.load_all_default_tools(cfg, verbose=False)
+    result = asyncio.run(registry.execute(tool_name, payload,
+                                          timeout=timeout or None))
+    if result.ok:
+        say(f"✅ {tool_name} · {result.elapsed_ms} ms")
+        md(result.content or "(no output)")
+        if result.artifacts:
+            say("artifacts: " + ", ".join(str(a) for a in result.artifacts))
+    else:
+        say(f"❌ {tool_name} failed")
+        md(result.error or "unknown error")
+        raise SystemExit(1)
+
+
+
+# ── the system prompt ───────────────────────────────────────────────────────
+@main.command()
+@click.option("--tools", default="", help="Comma separated tool names to advertise as bound.")
+@click.option("--memory", default="", help='Recalled-memory block to include, e.g. "favourite song: …".')
+@click.option("--knowledge", default="", help="Knowledge-base block to include.")
+@click.option("--session", default="", help="Session context block to include.")
+@click.option("--budget", default=0, type=int, help="Character ceiling (0 = config value).")
+@click.option("--style", default="", help="universal | persona (default: config).")
+@click.option("--out", default="", help="Write it to a file instead of printing.")
+def prompt(tools: str, memory: str, knowledge: str, session: str, budget: int,
+           style: str, out: str) -> None:
+    """Show the exact system prompt the model receives (and why it matters)."""
+    from ..core.brain import Brain
+    from ..core.system_prompt import build_universal_prompt, collect_environment
+    from ..tools.registry import ToolRegistry
+
+    cfg = load_config()
+    if style:
+        cfg = dict(cfg)
+        cfg["brain"] = dict(cfg.get("brain") or {})
+        cfg["brain"]["system_prompt"] = style
+    registry = ToolRegistry()
+    registry.load_all_default_tools(cfg, verbose=False)
+    brain = Brain(cfg)
+    chosen = [name.strip() for name in tools.split(",") if name.strip()]
+    bound = [registry.get(name) for name in chosen if registry.get(name)] or \
+        registry.get_all_tools()[:9]
+    brain.bind_tools(bound)
+    brain.attach_registry(registry)
+    brain.set_session_context(session)
+    limit = budget or int((cfg.get("brain") or {}).get("system_prompt_budget", 12000))
+
+    if brain.prompt_style() == "persona":
+        text = brain.system_prompt(memory=memory, knowledge=knowledge)
+    else:
+        text = build_universal_prompt(
+            environment=collect_environment(cfg, registry=registry),
+            config=cfg, tools=bound, memories=memory, knowledge=knowledge,
+            session=session, max_chars=limit)
+    if out:
+        Path(out).expanduser().write_text(text, encoding="utf-8")
+        say(f"✅ system prompt ({len(text)} chars) → {out}")
+        return
+    say(f"# system prompt · style={brain.prompt_style()} · {len(text)} chars "
+        f"(budget {limit}) · bound tools: "
+        f"{', '.join(t.name for t in bound) if len(bound) <= 6 else f'{len(bound)}'}")
+    md(text)
+
+
+# ── study coach (retention analytics + scheduled brief) ─────────────────────
+@main.group(invoke_without_command=True)
+@click.option("--vault", default="", help="Vault folder (overrides OBSIDIAN_VAULT).")
+@click.pass_context
+def coach(ctx: click.Context, vault: str) -> None:
+    """Study coach: daily brief, weak-topic analytics, weekly reviews."""
+    ctx.ensure_object(dict)
+    ctx.obj["vault"] = vault
+    if ctx.invoked_subcommand is None:
+        _coach_status(ctx.obj.get("vault", ""))
+
+
+def _coach_vault(vault: str = ""):
+    from ..tools.obsidian.vault import resolve_vault
+
+    cfg = load_config()
+    return cfg, resolve_vault(cfg, explicit=vault)
+
+
+@_obsidian_errors
+def _coach_status(vault: str = "") -> None:
+    from ..tools.obsidian.coach import coach_status
+
+    cfg, path = _coach_vault(vault)
+    md(coach_status(path, cfg))
+
+
+@coach.command("brief")
+@click.option("--write", is_flag=True, help="Save the brief into today's daily note.")
+@click.option("--day", default="", help="Target day (YYYY-MM-DD), default today.")
+@click.option("--limit", default=0, type=int, help="Items per section.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+@click.pass_context
+@_obsidian_errors
+def coach_brief(ctx: click.Context, write: bool, day: str, limit: int, as_json: bool) -> None:
+    """What to study right now: due cards, tasks, weak topics, exams."""
+    import json as _json
+    from datetime import date
+
+    from ..tools.obsidian.coach import build_brief, render_brief, write_brief
+
+    cfg, path = _coach_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    target = date.fromisoformat(day) if day else None
+    brief = build_brief(path, cfg, day=target, limit=limit or None)
+    if write:
+        written = write_brief(path, cfg, brief=brief, day=target)
+        say(f"✅ brief → {written['note']}")
+    if as_json:
+        say(_json.dumps(brief, indent=2, default=str))
+    else:
+        md(render_brief(brief))
+
+
+@coach.command("weak")
+@click.option("--limit", default=5, type=int, help="How many topics to list.")
+@click.option("--days", default=30, type=int, help="Retention window in days.")
+@click.pass_context
+@_obsidian_errors
+def coach_weak(ctx: click.Context, limit: int, days: int) -> None:
+    """Subjects and notes the student keeps forgetting."""
+    from ..tools.obsidian.coach import coach_status, weak_topics
+
+    cfg, path = _coach_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    rows = weak_topics(path, cfg, limit=limit, days=days)
+    if not rows:
+        say("Nothing reviewed yet — no weak spots to report.")
+        return
+    for topic in rows:
+        if topic["reviews"]:
+            say(f"  {topic['subject']} · {topic['topic']} — {topic['lapses']} lapse(s) in "
+                f"{topic['reviews']} review(s) ({topic['retention']}% retention), "
+                f"{topic['due']} due")
+        else:
+            say(f"  {topic['subject']} · {topic['topic']} — {topic['new']} unreviewed, "
+                f"{topic['due']} due")
+    say("")
+    md(coach_status(path, cfg))
+
+
+@coach.command("weekly")
+@click.option("--day", default="", help="Any day of the week (YYYY-MM-DD).")
+@click.pass_context
+@_obsidian_errors
+def coach_weekly(ctx: click.Context, day: str) -> None:
+    """Write the weekly review note (retention table + next week's focus)."""
+    from datetime import date
+
+    from ..tools.obsidian.coach import weekly_review
+
+    cfg, path = _coach_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    target = date.fromisoformat(day) if day else None
+    result = weekly_review(path, cfg, day=target)
+    say(f"✅ weekly review → {result['note']} ({result['week'][0]} → {result['week'][1]})")
+
+
+@coach.command("watch")
+@click.option("--at", "times", default="", help='Times like "19:30" or "07:00,19:30".')
+@click.option("--notify/--no-notify", default=None, help="Desktop notification.")
+@click.option("--speak/--no-speak", default=None, help="Read the headline aloud.")
+@click.option("--weekly/--no-weekly", default=None, help="Sunday review note.")
+@click.option("--once", is_flag=True, help="Run one cycle immediately, then exit.")
+@click.option("--iterations", default=0, type=int, help="Stop after N cycles (testing).")
+@click.pass_context
+@_obsidian_errors
+def coach_watch(ctx: click.Context, times: str, notify: bool, speak: bool, weekly: bool,
+                once: bool, iterations: int) -> None:
+    """Sit in the background and write the brief at the scheduled times."""
+    from ..tools.obsidian.coach import parse_times, run_once, watch
+
+    cfg, path = _coach_vault(ctx.obj.get("vault", "") if ctx.obj else "")
+    settings = cfg.get("obsidian", {}).get("coach", {}) if isinstance(cfg, dict) else {}
+    notify = bool(settings.get("notify", True)) if notify is None else notify
+    speak = bool(settings.get("speak", False)) if speak is None else speak
+    weekly = bool(settings.get("weekly_review", True)) if weekly is None else weekly
+    schedule = parse_times(times or settings.get("times") or ["19:30"])
+
+    if once:
+        run = run_once(path, cfg, write=True, notify=notify, speak=speak, weekly=weekly)
+        say(f"✅ {run.line()}")
+        return
+    say(f"🕒 Study coach watching — brief at {', '.join(schedule)} "
+        f"(notify={notify}, speak={speak}, weekly={weekly}). Ctrl-C to stop.")
+    try:
+        runs = watch(path, cfg, times=schedule, notify=notify, speak=speak,
+                     weekly=weekly, iterations=iterations or None,
+                     on_run=lambda run: say(f"  {run.line()}"))
+    except KeyboardInterrupt:
+        say("\n👋 Coach stopped.")
+        return
+    if iterations:
+        say(f"ran {len(runs)} cycle(s)")
 
 
 @main.command()

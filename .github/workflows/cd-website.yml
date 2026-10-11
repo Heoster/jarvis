@@ -1,0 +1,49 @@
+name: CD · website
+
+# Continuous delivery for the one-page site in docs/website.
+#
+# Manual by default: GitHub Pages must be switched to "GitHub Actions" as its
+# source once — Settings → Pages → Build and deployment → Source: GitHub Actions —
+# after which every dispatch (or tag) deploys. It is deliberately not wired to
+# every push to main so that an unconfigured Pages setup never turns main red.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to publish (default: the branch you pick above)"
+        required: false
+        default: ""
+  push:
+    tags: ["site-*"]
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: publish docs/website
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/website
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

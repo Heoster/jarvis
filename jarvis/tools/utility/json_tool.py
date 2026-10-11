@@ -41,7 +41,6 @@ def json_parse(text: str, indent: int = 2) -> str:
         return f"❌ {exc}"
     formatted = safe_json(data, indent=indent)
     kind = type(data).__name__
-    size = len(formatted)
     summary = f"✅ Valid {kind}"
     if isinstance(data, dict):
         summary += f" with {len(data)} keys: {', '.join(list(data)[:12])}"
