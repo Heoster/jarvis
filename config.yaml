@@ -201,6 +201,28 @@ code:
                        "init 0", ":(){", "fork bomb", "chmod -R 777 /",
                        "format c:", "del /f /s /q c:"]
 
+# ── Obsidian (notes, flashcards, study workflow) ───────────────────────────
+# The vault is a plain folder of markdown files: JARVIS reads and writes them
+# directly, so this works with Obsidian closed and with any editor.
+obsidian:
+  enabled: true
+  vault_path: ""                   # or export OBSIDIAN_VAULT=/path/to/MyVault
+  default_folder: "00 Inbox"       # where new loose notes are created
+  daily_notes:
+    folder: "02 Daily Notes"
+    format: "%Y-%m-%d"             # matches the core Daily Notes plugin default
+    template: "99 Templates/Daily Note.md"
+  subjects: ["Physics", "Chemistry", "Maths", "English", "Computer Science"]
+  study:
+    topics_per_day: 2              # study-plan density
+    session_minutes: 45
+    final_days_for_full_revision: 2
+  srs:
+    database: "./data/obsidian_srs.json"   # spaced-repetition schedule (SM-2)
+    inline_markers: false          # also write <!--SR:…--> for the SR plugin
+  plugin:
+    source_dir: "obsidian-plugin/jarvis"   # the JARVIS Obsidian plugin to install
+
 # ── Sessions ────────────────────────────────────────────────────────────────
 sessions:
   auto_save: true

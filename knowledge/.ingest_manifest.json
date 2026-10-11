@@ -5,8 +5,13 @@
     "ingested_at": "2026-10-11T04:15:00.173510+00:00"
   },
   "knowledge/jarvis_commands.md": {
-    "hash": "2133939fe6f5fc286ae17b39",
-    "chunks": 3,
-    "ingested_at": "2026-10-11T04:15:00.190888+00:00"
+    "hash": "2b14079e25d6eb9b3cb23157",
+    "chunks": 4,
+    "ingested_at": "2026-10-11T04:40:26.524316+00:00"
+  },
+  "knowledge/student_workflow.md": {
+    "hash": "f0403fb18fa07161a3e08dbe",
+    "chunks": 7,
+    "ingested_at": "2026-10-11T04:40:26.615977+00:00"
   }
 }

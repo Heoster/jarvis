@@ -43,6 +43,10 @@ AGENT_TRIGGERS: Dict[str, Tuple[str, ...]] = {
              "clean up", "csv", "log file", "summarise the document"),
     "memory": ("remember", "recall", "what do you know", "memory", "earlier",
                "last time", "my preferences", "yaad"),
+    "study": ("obsidian", "my notes", "note down", "make notes", "flashcard",
+              "flashcards", "revision", "revise", "study plan", "study for",
+              "syllabus", "my vault", "lecture notes", "homework", "assignment",
+              "exam on", "board exam", "mock test", "padhai", "likhna hai"),
 }
 
 
