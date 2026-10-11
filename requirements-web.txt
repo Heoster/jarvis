@@ -1,0 +1,4 @@
+# Optional: web UI + FastAPI flavour of the local API server.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+gradio>=4.31
