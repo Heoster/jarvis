@@ -44,3 +44,20 @@ scripts/start-xvfb.sh        # headless Linux: virtual display for screen contro
 | DuckDuckGo HTML | free, unofficial | search #4 |
 | Jina Reader | free tier | crawl #1 |
 | Firecrawl | 500 credits total | crawl #3 |
+
+## Obsidian (notes · flashcards · study plans)
+
+```bash
+python -m jarvis obsidian status                  # vault, due cards, exams
+python -m jarvis obsidian search "thermodynamics" # search every note
+python -m jarvis obsidian daily --text "- [ ] revise optics"
+python -m jarvis obsidian cards due               # today's revision
+python -m jarvis obsidian cards add "Q :: A"      # write a flashcard
+python -m jarvis obsidian cards from-note --note "Newton's Laws"
+python -m jarvis obsidian cards review --note X --grade good "question"
+python -m jarvis obsidian plan --exam 2027-03-01  # day-by-day revision plan
+python -m jarvis obsidian queue                   # what to revise right now
+python -m jarvis obsidian kit                     # build the student vault
+python -m jarvis obsidian plugins                 # plugins + reasons
+python -m jarvis obsidian plugins --install       # install the JARVIS Obsidian plugin
+```

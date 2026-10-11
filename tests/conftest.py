@@ -22,7 +22,8 @@ if str(REPO_ROOT) not in sys.path:
 for variable in ("GROQ_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY",
                  "GEMINI_API_KEY", "GOOGLE_API_KEY", "HUGGINGFACE_API_KEY",
                  "HF_TOKEN", "TAVILY_API_KEY", "SERPER_API_KEY",
-                 "FIRECRAWL_API_KEY", "JINA_API_KEY", "SEARXNG_BASE_URL"):
+                 "FIRECRAWL_API_KEY", "JINA_API_KEY", "SEARXNG_BASE_URL",
+                 "OBSIDIAN_VAULT"):
     os.environ[variable] = ""
 
 _TEST_CONFIG = """\
@@ -53,6 +54,10 @@ screen:
   screenshot_dir: "{home}/data/screenshots"
 browser:
   screenshot_dir: "{home}/data/screenshots"
+obsidian:
+  vault_path: ""
+  srs:
+    database: "{home}/data/obsidian_srs.json"
 paths:
   trash_dir: "{home}/data/trash"
 agent:

@@ -64,6 +64,10 @@ TOOL_KEYWORDS: Dict[str, Tuple[str, ...]] = {
                       "webhook", "message", "telegram", "whatsapp", "sms"),
     "utility": ("time", "date", "today", "calculate", "convert", "json",
                 "clipboard", "colour", "color", "image", "download", "timer"),
+    "obsidian": ("obsidian", "vault", "note", "notes", "notebook", "markdown",
+                 "flashcard", "flashcards", "revision", "revise", "study", "study plan",
+                 "syllabus", "chapter", "lecture", "exam", "homework", "assignment",
+                 "todo list", "my notes", "padhai", "likha", "likha tha"),
 }
 
 _ALWAYS_ON = ("utility", "memory")
