@@ -31,9 +31,11 @@ permissions:
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONUNBUFFERED: "1"
-  # Flip to "0" once nobody needs the committed test reports any more; the
-  # publish step then becomes a no-op and CI stops writing to the branch.
-  JARVIS_CI_PUBLISH_REPORTS: "1"
+  # The test jobs can commit their pytest output to ci-diagnostics/ so a red run
+  # is diagnosable without the Actions log UI (which is not reachable from every
+  # environment). Off by default because it writes commits to the branch; set to
+  # "1" while debugging a failure, then back to "0".
+  JARVIS_CI_PUBLISH_REPORTS: "0"
 
 jobs:
   # ── fast gates: real bugs in the code, before spending minutes on the matrix ──
@@ -143,7 +145,6 @@ jobs:
 
       - name: Run the test suite
         id: tests
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
