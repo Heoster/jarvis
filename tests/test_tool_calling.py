@@ -106,17 +106,18 @@ def _run(orchestrator, text):
 
 
 def test_action_request_is_nudged_and_then_runs_the_tool(config):
+    # "delete" is an action but is not routed directly, so the model is asked first
     orchestrator, calls_run = _orchestrator(config, [
-        {"content": "Done, I played pasuri for you."},                    # claims, no tool
-        {"tool_calls": [{"id": "1", "name": "media_play",
-                         "args": {"query": "pasuri"}}]},                  # now acts
-        {"content": "Playing pasuri now."},
-    ], (True, "playing: Pasuri - Onumula"))
+        {"content": "Done, I deleted the old backup."},                  # claims, no tool
+        {"tool_calls": [{"id": "1", "name": "delete_path",
+                         "args": {"path": "old-backup"}}]},               # now acts
+        {"content": "Deleted the old backup."},
+    ], (True, "deleted old-backup"))
 
-    events = _run(orchestrator, "play pasuri on youtube")
+    events = _run(orchestrator, "delete the old backup folder")
     assert any(e.type == "notice" and "asking the model to act" in e.text for e in events)
-    assert [c["name"] for c in calls_run] == ["media_play"]
-    assert orchestrator.last_result.answer == "Playing pasuri now."
+    assert [c["name"] for c in calls_run] == ["delete_path"]
+    assert orchestrator.last_result.answer == "Deleted the old backup."
     orchestrator.shutdown()
 
 
@@ -188,5 +189,6 @@ def test_play_request_without_a_tool_call_runs_play_song(config):
     events = _run(orchestrator, "play pasuri on youtube")
     assert [c["name"] for c in calls_run] == ["play_song"]
     assert calls_run[0]["args"] == {"query": "pasuri"}
-    assert any(e.type == "notice" and "running play_song" in e.text for e in events)
+    assert any(e.type == "notice" and "routed to play_song" in e.text for e in events)
+    assert orchestrator.brain.asked == 0          # routed directly, no model step
     orchestrator.shutdown()

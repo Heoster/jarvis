@@ -525,6 +525,52 @@ Tool use depends on the model. Small models (3B) often describe a step instead o
 the tool. For reliable workflows, use a 7B model with tool support, for example
 `qwen2.5:7b-instruct`, by setting `llm.model` and `llm.provider_models.ollama` in `config.yaml`.
 
+## Pipelines (cursor, keyboard and search)
+
+A **pipeline** is a fixed recipe the agent runs step by step with real tools. Each
+pipeline has *strategies*, tried in order. A strategy is a list of tool steps. The first
+strategy whose steps all succeed wins. Every attempt is recorded, so a failure says which
+strategy and which step broke. Definitions live in `pipelines/*.json` and can be edited
+without code.
+
+### `web_search`: "search heoster", "google best laptops", "look up python asyncio"
+
+| order | strategy | what the agent does |
+|---|---|---|
+| 1 | `desktop_keyboard` | starts Chrome, focuses it, presses **Ctrl+L**, types the search address with the **keyboard**, presses **Enter**, then reads the screen (OCR) and checks the query words are visible |
+| 2 | `browser_typing` | opens the search engine in the managed browser, types the query into its search box with **DOM typing** and presses Enter, then reads the results page |
+| 3 | `search_api` | keyless search API (Tavily, Serper, SearXNG, DuckDuckGo or Jina, whichever is configured) |
+
+A search request is routed straight to this pipeline. The model is not asked to choose a
+tool, and the pipeline result is the answer. If every strategy fails, the reply is an
+error that lists each attempt. It never invents results.
+
+**Cursor and keyboard need a desktop session.** On Windows, `pip install pyautogui` enables
+`keyboard_type`, `keyboard_press`, `screen_focus_window` and `read_screen_text`. On a
+headless Linux server there is no screen, so the first strategy fails and the next one runs.
+
+### Pipeline file format
+
+```json
+{"name": "web_search", "inputs": ["query"], "strategies": [
+  {"name": "desktop_keyboard", "steps": [
+    {"tool": "keyboard_type", "args": {"text": "https://duckduckgo.com/?q={query_url}"},
+     "wait": 0.3, "expect": "query", "note": "type the search address"}
+  ]}
+]}
+```
+
+- `{query}` is the raw input, `{query_url}` is URL-encoded, `{last}` is the previous step's output.
+- `wait` sleeps (seconds) before the step, so windows can open and focus.
+- `expect` checks the step output. `"query"` means some word of the query must appear in it. Any other string is a case-insensitive substring.
+- Test suite: every step must name a real tool and real arguments, so a broken pipeline fails the tests.
+
+### Using pipelines from the model
+
+The model can also call `run_pipeline(name, query)` (`name="web_search"`). Its guide line tells
+it when to use it. Routing does the job for clear search requests, and the model is the
+fallback for everything else.
+
 ## Tools (123)
 
 | Category | Count | Highlights |

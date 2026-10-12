@@ -14,6 +14,10 @@ __all__ = ["TOOL_GUIDE", "guide_lines"]
 
 #: tool name -> (WHEN to use it, HOW to call it)
 TOOL_GUIDE: Dict[str, Tuple[str, str]] = {
+    "run_pipeline": (
+        "operator asks to search the web (search X, google X, look up X)",
+        'name="web_search", query = the search words only; the result is the answer',
+    ),
     "play_song": (
         "operator asks to play / listen to / bajao / chalao a song or video",
         "query = the song or artist name only; reports the video it opened",

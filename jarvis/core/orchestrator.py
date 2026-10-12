@@ -30,6 +30,7 @@ from ..utils.logger import get_logger
 from ..utils.sanitizer import truncate
 from ..tools.registry import ToolRegistry
 from .brain import Brain
+from .providers import LLMResponse
 from .messages import (
     AIMessage, HumanMessage, Message, SystemMessage, ToolMessage, ensure_messages,
     normalise_role, text_of,
@@ -104,6 +105,9 @@ class Orchestrator:
             if isinstance(self.config.get("agent"), Mapping) else True)
 
         self.registry = registry or ToolRegistry()
+        from ..tools.pipelines import bind_registry as _bind_pipelines
+
+        _bind_pipelines(self.registry)
         self.brain = brain or Brain(self.config)
         self.memory = memory or get_memory_manager(self.config)
         self.session_started = False
@@ -223,6 +227,8 @@ class Orchestrator:
         deadline = time.monotonic() + self.turn_timeout
         final_text = ""
         action_request = needs_action(user_input) and bool(bound_tools)
+        route = direct_route(user_input)
+        direct_answer = False
         nudged = False
 
         for iteration in range(1, self.max_iterations + 1):
@@ -234,8 +240,18 @@ class Orchestrator:
 
             yield TurnEvent("thinking", f"… reasoning (step {iteration})",
                             {"iteration": iteration})
+            direct_now = iteration == 1 and route is not None and route[0] in self.registry
             try:
-                response = await self.brain.athink(messages, tools=bound_tools)
+                if direct_now:
+                    response = LLMResponse(
+                        content="", tool_calls=[{"id": "route-1", "name": route[0],
+                                                 "args": dict(route[1])}],
+                        provider="router", model="direct-route")
+                    direct_answer = True
+                    yield TurnEvent("notice", f"➜ routed to {route[0]} (no model step needed)",
+                                    {"kind": "route", "tool": route[0]})
+                else:
+                    response = await self.brain.athink(messages, tools=bound_tools)
             except Exception as exc:
                 # the API manager already tried every provider
                 log.error(f"LLM call failed: {exc}")
@@ -260,9 +276,8 @@ class Orchestrator:
                      "to": response.provider})
 
             # Asked once and still no tool call on a play request: run play_song ourselves.
-            bound_names = {getattr(t, "name", "") for t in bound_tools}
             if (nudged and action_request and not response.has_tool_calls
-                    and not tool_call_log and "play_song" in bound_names):
+                    and not tool_call_log and "play_song" in self.registry):
                 query = forced_play_query(user_input)
                 if query:
                     response.tool_calls = [{"id": "direct-1", "name": "play_song",
@@ -354,6 +369,11 @@ class Orchestrator:
                     tool_call_id=call.get("id", ""), name=call["name"]))
 
             result.tool_calls = tool_call_log
+            if direct_answer and tool_results:
+                first = tool_results[0]
+                final_text = first.content if first.ok else f"Error: {first.error}"
+                yield TurnEvent("text", final_text)
+                break
             # refresh the element map / DOM view hints when the browser changed page
             if any(call["name"].startswith(("browse_", "page_")) for call in calls):
                 bound_tools = self.brain.select_relevant_tools(
@@ -484,6 +504,38 @@ def forced_play_query(user_input: str) -> str:
     if query.lower() == "random":  # "play a random song": a random pick, not the word "random"
         return "popular songs"
     return query
+
+
+_SEARCH_RE = re.compile(
+    r"^\s*(?:please\s+|jarvis\s+)?(?:search(?:\s+for)?|google|look\s+up|lookup)\s+"
+    r"(?P<q>.+?)[\s.!?]*$", re.IGNORECASE)
+_NOT_A_WEB_SEARCH = re.compile(
+    r"^(my|the|in|a\s+file|files?|folder|memory|notes?|history|for\s+my)\b", re.IGNORECASE)
+
+
+def forced_search_query(user_input: str) -> str:
+    """The web search words for "search X" / "google X" / "look up X", else ``""``.
+
+    "search my notes for exams" is not a web search and returns ``""``.
+    """
+    match = _SEARCH_RE.match(user_input or "")
+    if not match:
+        return ""
+    query = match.group("q").strip()
+    if not query or _NOT_A_WEB_SEARCH.match(query):
+        return ""
+    return query
+
+
+def direct_route(user_input: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """A (tool, args) to run without asking the model, for clear play and search requests."""
+    song = forced_play_query(user_input)
+    if song:
+        return "play_song", {"query": song}
+    search = forced_search_query(user_input)
+    if search:
+        return "run_pipeline", {"name": "web_search", "query": search}
+    return None
 
 
 def needs_action(user_input: str) -> bool:
