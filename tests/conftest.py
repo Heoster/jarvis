@@ -21,7 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 # A stray .env or exported key must never let a test hit the network.
-for variable in ("GROQ_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY",
+# Never let a test start a real `ollama serve` on the machine.
+os.environ["JARVIS_OLLAMA_AUTOSTART"] = "0"
+for variable in ("GROQ_API_KEY", "OPENROUTER_API_KEY",
                  "GEMINI_API_KEY", "GOOGLE_API_KEY", "HUGGINGFACE_API_KEY",
                  "HF_TOKEN", "TAVILY_API_KEY", "SERPER_API_KEY",
                  "FIRECRAWL_API_KEY", "JINA_API_KEY", "SEARXNG_BASE_URL",

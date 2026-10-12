@@ -1,0 +1,45 @@
+{
+  "name": "web_search",
+  "description": "Search the web for the operator. Tries the real keyboard in Chrome first, then types into the page in the browser, then falls back to the search API.",
+  "inputs": ["query"],
+  "strategies": [
+    {
+      "name": "desktop_keyboard",
+      "description": "Real cursor and keyboard: focus Chrome, type the search address into the address bar, press Enter, then read the screen (OCR) to confirm results are visible.",
+      "steps": [
+        {"tool": "launch_application", "args": {"name": "chrome"}, "wait": 2,
+         "note": "start Chrome if it is not open (no-op when it is)"},
+        {"tool": "screen_focus_window", "args": {"title": "Chrome"}, "wait": 1,
+         "note": "keyboard input must reach Chrome"},
+        {"tool": "keyboard_press", "args": {"key": "ctrl+l"}, "wait": 0.5,
+         "note": "focus the address bar"},
+        {"tool": "keyboard_type", "args": {"text": "https://duckduckgo.com/?q={query_url}"}, "wait": 0.3,
+         "note": "type the search address with the keyboard"},
+        {"tool": "keyboard_press", "args": {"key": "enter"}, "wait": 3,
+         "note": "run the search"},
+        {"tool": "read_screen_text", "args": {}, "expect": "query",
+         "note": "confirm the query words are on screen"}
+      ]
+    },
+    {
+      "name": "browser_typing",
+      "description": "Open the search engine in the managed browser, type the query into its search box, press Enter and read the results page.",
+      "steps": [
+        {"tool": "browse_open", "args": {"url": "https://duckduckgo.com/", "new_tab": true, "read_page": true},
+         "expect": "duckduckgo", "note": "open the search engine"},
+        {"tool": "page_type", "args": {"target": "search", "text": "{query}", "press_enter": true}, "wait": 2,
+         "note": "type into the search box and submit"},
+        {"tool": "page_read", "args": {"max_chars": 4000}, "expect": "query",
+         "note": "read the results page"}
+      ]
+    },
+    {
+      "name": "search_api",
+      "description": "Keyless search API (Tavily, Serper, SearXNG, DuckDuckGo, Jina — whichever is configured). No browser needed.",
+      "steps": [
+        {"tool": "search_web", "args": {"query": "{query}", "max_results": 5}, "expect": "query",
+         "note": "structured results with URLs"}
+      ]
+    }
+  ]
+}

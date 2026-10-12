@@ -36,6 +36,7 @@ JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, kee
 - [Obsidian & student mode](#obsidian--student-mode)
 - [The system prompt (what the model is actually told)](#the-system-prompt-what-the-model-is-actually-told)
 - [Play a song (URL injection, verification, memory)](#play-a-song-url-injection-verification-memory)
+- [Agentic harness (guardrails, verification, audit)](#agentic-harness-guardrails-verification-audit)
 - [Tools (123)](#tools-123)
 - [Agents](#agents)
 - [Architecture](#architecture)
@@ -55,7 +56,7 @@ JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, kee
 | Operator | **Heoster** — Harsh Saini, founder of CODEEX-AI, Khatauli (Muzaffarnagar), India |
 | Cost policy | **Free tiers only.** No paid API, no metered service, no credit card |
 | Vision model | **None, by design.** Screen understanding is OCR + DOM, never a VLM |
-| LLM chain | ollama → groq → cerebras → openrouter → gemini → hf → stub (auto-failover, verified) |
+| LLM chain | ollama → groq → gemini → openrouter → hf → error (auto-failover, verified) |
 | Browser chain | playwright → selenium → cdp (terminal-launched Chrome) → screen control |
 | Tools | **123**, in 10 categories, all schema-validated |
 | Memory | short-term window + episodic / semantic / procedural long-term tiers, hybrid recall |
@@ -135,7 +136,7 @@ Storage is a single SQLite file (`memory_store/vectors.sqlite3`, WAL mode, float
 
 `jarvis/core/api_manager.py` is the reason JARVIS keeps answering when a free tier dies.
 
-- **Chain**: `ollama → groq → cerebras → openrouter → gemini → hf → stub`, reorderable, always ending in a provider that cannot fail.
+- **Chain**: `ollama → groq → gemini → openrouter → hf`, then an explicit error. Reorderable via `llm.fallback_chain`. When every provider fails, the turn shows the error with each provider's reason — JARVIS never invents an answer. Ollama is only used if it is actually running and has the model pulled.
 - **Health checks**: each provider has a cheap `probe()` (model list / ping). Results are cached for 90 s with latency recorded.
 - **Backoff**: a provider that errors is marked `degraded`/`down` with exponential backoff (2 s → 120 s) instead of being hammered.
 - **Quota integration**: every call passes the free-tier quota manager (rpm / rpd / monthly credits per provider) *before* the request, so JARVIS never burns a free tier it needs later.
@@ -145,17 +146,20 @@ Storage is a single SQLite file (`memory_store/vectors.sqlite3`, WAL mode, float
   3. the answer records `provider`, `fallback_from` and `degraded: true`,
   4. a background **auto-heal** thread re-probes failed providers every 120 s and returns them to the chain once they recover,
   5. `jarvis api --verify` forces a live probe of every provider and prints latency + status, and `recent_fallbacks()` exposes the audit trail.
-- **Honest last resort**: the `stub` provider never pretends to reason. It performs the *obvious* tool call (arithmetic, time, URL, search), returns raw results, and tells Heoster how to get a real model — including the exact `ollama pull` command.
+- **Retired or unserved models are skipped inside a provider**: each provider has a candidate list (`llm.fallback_models`). A 404 (e.g. a retired OpenRouter `:free` slug, or Gemini 2.0 after its 2026-06-01 shutdown) or Hugging Face's `model_not_supported` moves to the next candidate model before the provider is given up on.
+- **`stub`** is a deterministic test/dev provider only (`llm.provider: stub`). It is not in the production chain.
+- **Ollama auto-start**: when JARVIS needs Ollama and it is not answering on a *local* address, it runs `ollama serve` in the background (log: `logs/ollama-serve.log`), waits up to `llm.ollama.autostart_timeout` seconds (default 20) and continues. The server is left running after JARVIS exits. Remote URLs are never started. If the binary is missing, or the server fails to start, the reason is shown and the next provider is used; a failed start is not retried for 60 s. Turn it off with `llm.ollama.autostart: false` or `JARVIS_OLLAMA_AUTOSTART=0`. Tests never start Ollama.
+- **Ollama URL** is resolved in this order: `OLLAMA_BASE_URL` → `OLLAMA_HOST` (Ollama's own variable, e.g. `0.0.0.0:11434`, which is read as `http://127.0.0.1:11434`) → `llm.ollama.base_url` → `llm.base_url` → `http://127.0.0.1:11434`. The embedder uses the same URL.
 
 ```
 $ python -m jarvis api --verify
   provider     status        latency   note
-  ollama       down          -         connection refused (start `ollama serve`)
+  ollama       down          -         connection refused (auto-start on; see above)
   groq         unconfigured  -         no API key (set GROQ_API_KEY)
   ...
-  stub         healthy       0 ms      unlimited
-  fallback chain : ollama → groq → cerebras → openrouter → gemini → hf → stub
-  would answer   : stub
+  hf           healthy       412 ms   token ok for you; model Qwen/Qwen2.5-7B-Instruct
+  fallback chain : ollama → groq → gemini → openrouter → hf
+  would answer   : hf
 ```
 
 ---
@@ -452,6 +456,15 @@ character ceiling (default 12000).
 
 ## Play a song (URL injection, verification, memory)
 
+**The pipeline for "play a song"** (`play_song`, the first choice):
+
+1. build the YouTube search URL from the song name: `https://www.youtube.com/results?search_query=…`
+2. read that results page with **Jina Reader** (`r.jina.ai`), no browser needed
+3. take the **first trusted link** in search order: a `watch?v=` or `youtu.be/` video on YouTube hosts (channels, ads and other sites are skipped)
+4. open that video in Chrome with `browse_open` and report the title and URL it opened
+
+`media_play` does the same search through the browser and checks the player state. Use it when playback must be verified. If the model does not call a tool for a play request, JARVIS runs `play_song` itself, so "play X" never ends as a text-only reply.
+
 ```bash
 python -m jarvis tool media_play '{"query":"kesariya arijit singh"}'
 python -m jarvis tool media_play '{}'                    # replay the last song
@@ -468,6 +481,111 @@ whether it is playing, paused (autoplay blocked) or ended → press `k`, then
 `video.play()` if still paused → confirm again → record the play with the date,
 channel and query in `data/media_history.json` (and mirror it to long-term memory).
 
+
+## Workflows (built-in skills)
+
+`skills/builtin_workflows.json` holds 20 ready-made workflows. Each one is a skill: a
+trigger (the words you would use), the tool steps in order, and a note per step. When a
+request matches, the steps are offered to the model as a plan, so it follows the recipe
+instead of guessing.
+
+| workflow | what it does | example request |
+|---|---|---|
+| `open_youtube_and_play` | plays the best YouTube match and reports the title | "play pasuri on youtube" |
+| `play_random_song` | picks a song from your play history, else a popular search | "open yt and play a random song" |
+| `open_website` | opens a site, reusing the open Chrome window | "open github" |
+| `search_web_and_answer` | searches, reads the best result, answers with sources | "latest news on solar panels" |
+| `read_page_and_summarise` | reads one URL and summarises it | "summarise this article: …" |
+| `fill_web_form` | fills fields and stops before submitting | "fill the signup form on …" |
+| `screenshot_and_describe_page` | captures the page and describes it | "what is on this page?" |
+| `take_note_to_file` | writes a note to a file | "save this as notes.md" |
+| `summarise_folder` | lists a folder and summarises the key files | "summarise my notes folder" |
+| `find_file_by_name` | locates a file by name | "where is my resume.pdf" |
+| `remember_fact` | stores a fact and reads it back to confirm | "remember my exam is on 14 Nov" |
+| `recall_past_information` | searches memory and play history | "what did I tell you about my exam?" |
+| `time_in_timezone` | current time, or a timezone conversion | "time in Tokyo now" |
+| `calculate_and_percentage` | exact maths and percentages | "what is 18% of 2450?" |
+| `flashcard_revision_session` | quizzes the due Obsidian flashcards | "quiz me on my flashcards" |
+| `make_exam_study_plan` | day-by-day revision plan to an exam date | "make a study plan for 14 Nov" |
+| `run_code_and_fix` | runs a Python snippet, fixes the error, retries (max 3) | "run this script and fix it" |
+| `clipboard_word_count` | word, character and line count of the clipboard | "count words in my clipboard" |
+| `check_system_status` | CPU, memory, disk and OS details | "system status" |
+| `draft_email_for_review` | drafts an email and never sends it without a yes | "draft an email to my teacher" |
+
+- **Edit or add** a workflow in the JSON file (or re-run `scripts/build_builtin_workflows.py`
+  after changing its list). Keep names unique and use only tools that exist: the test suite
+  checks every step against the live tool schemas.
+- **Learned skills** are saved in your skills folder. A learned skill with the same name
+  overrides a built-in one.
+- **Only successful turns are learned.** A turn where a tool failed, or no answer was
+  produced, is not stored as a skill.
+- **Judgement steps** (marked `(no tool)`) tell the model what to do with the results. They
+  are not run as tools.
+
+Tool use depends on the model. Small models (3B) often describe a step instead of calling
+the tool. For reliable workflows, use a 7B model with tool support, for example
+`qwen2.5:7b-instruct`, by setting `llm.model` and `llm.provider_models.ollama` in `config.yaml`.
+
+## Pipelines (cursor, keyboard and search)
+
+A **pipeline** is a fixed recipe the agent runs step by step with real tools. Each
+pipeline has *strategies*, tried in order. A strategy is a list of tool steps. The first
+strategy whose steps all succeed wins. Every attempt is recorded, so a failure says which
+strategy and which step broke. Definitions live in `pipelines/*.json` and can be edited
+without code.
+
+### `web_search`: "search heoster", "google best laptops", "look up python asyncio"
+
+| order | strategy | what the agent does |
+|---|---|---|
+| 1 | `desktop_keyboard` | starts Chrome, focuses it, presses **Ctrl+L**, types the search address with the **keyboard**, presses **Enter**, then reads the screen (OCR) and checks the query words are visible |
+| 2 | `browser_typing` | opens the search engine in the managed browser, types the query into its search box with **DOM typing** and presses Enter, then reads the results page |
+| 3 | `search_api` | keyless search API (Tavily, Serper, SearXNG, DuckDuckGo or Jina, whichever is configured) |
+
+A search request is routed straight to this pipeline. The model is not asked to choose a
+tool, and the pipeline result is the answer. If every strategy fails, the reply is an
+error that lists each attempt. It never invents results.
+
+**Cursor and keyboard need a desktop session.** On Windows, `pip install pyautogui` enables
+`keyboard_type`, `keyboard_press`, `screen_focus_window` and `read_screen_text`. On a
+headless Linux server there is no screen, so the first strategy fails and the next one runs.
+
+### Pipeline file format
+
+```json
+{"name": "web_search", "inputs": ["query"], "strategies": [
+  {"name": "desktop_keyboard", "steps": [
+    {"tool": "keyboard_type", "args": {"text": "https://duckduckgo.com/?q={query_url}"},
+     "wait": 0.3, "expect": "query", "note": "type the search address"}
+  ]}
+]}
+```
+
+- `{query}` is the raw input, `{query_url}` is URL-encoded, `{last}` is the previous step's output.
+- `wait` sleeps (seconds) before the step, so windows can open and focus.
+- `expect` checks the step output. `"query"` means some word of the query must appear in it. Any other string is a case-insensitive substring.
+- Test suite: every step must name a real tool and real arguments, so a broken pipeline fails the tests.
+
+### Using pipelines from the model
+
+The model can also call `run_pipeline(name, query)` (`name="web_search"`). Its guide line tells
+it when to use it. Routing does the job for clear search requests, and the model is the
+fallback for everything else.
+
+## Agentic harness (guardrails, verification, audit)
+
+JARVIS follows the harness model from the Databricks article [*What is an AI Agent Harness?*](https://www.databricks.com/blog/ai-harness): **agent = model + harness**. The model reasons. The harness supplies the tools, memory, workspace, guardrails, feedback loops, observability and context management. Every tool call goes through the harness:
+
+- **Guardrails and approvals.** Each call is classified as read, write, external, system or destructive. Reads run freely. Writes inside `workspace_roots` run in `ask` mode. Everything else asks the operator. With no terminal the answer is no. `deny_tools` always wins. `run_pipeline` is allowed by default, because a search request is the operator's own authorization.
+- **Verification.** File writes, appends, deletes, moves and copies are read back from disk. A mismatch is reported as `VERIFICATION FAILED` and counts as a failure.
+- **Loop breaker.** A tool that fails twice in one turn is blocked, and the model is told to stop retrying. An identical call is also stopped.
+- **Audit log.** Each decision and each call is written as a JSON line to `logs/audit.jsonl` (or `$JARVIS_LOG_DIR`), with secrets redacted.
+
+The loop is reason → act → observe → repeat, and a final answer that claims an action without a tool result is flagged.
+
+Known gaps: `run_bash` and `run_python` are approval-gated but not confined to the workspace, so a real sandbox is still future work. The mapping of the eight building blocks, the risk table and the audit format are in [`docs/HARNESS.md`](docs/HARNESS.md).
+
+---
 
 ## Tools (123)
 
@@ -531,8 +649,8 @@ Routing is keyword-scored with structural signals (a URL + "open" → browser; "
         │ verified failover  │   │  categories       │
         └──────────┬─────────┘   └──────┬────────────┘
                    │                    │
-   ollama→groq→cerebras→openrouter→   browser·screen·search·crawl·
-   gemini→hf→stub                     code·file·utility·comms·memory·obsidian
+   ollama→groq→gemini→openrouter→hf   browser·screen·search·crawl·
+   → error                            code·file·utility·comms·memory·obsidian
                    │                    │
               ┌────▼────────────────────▼─────┐
               │  Smart Memory Manager         │
@@ -555,7 +673,6 @@ JARVIS tracks every provider's free allowance and refuses to exceed it (`data/qu
 | --- | --- | --- |
 | ollama | unlimited | local models — the primary free brain |
 | groq | 30 rpm / 14 400 rpd | very fast free tier, no card |
-| cerebras | 30 rpm / 14 400 rpd | free tier |
 | openrouter | 20 rpm / 50 rpd | free models (`:free` suffix) |
 | gemini | 15 rpm / 1 500 rpd | free tier |
 | huggingface | 10 rpm / 1 000 rpd | inference API |
@@ -575,9 +692,19 @@ JARVIS tracks every provider's free allowance and refuses to exceed it (`data/qu
 ```yaml
 llm:
   provider: auto                 # auto = verified fallback chain
-  fallback_chain: [ollama, groq, cerebras, openrouter, gemini, hf, stub]
+  fallback_chain: [ollama, groq, gemini, openrouter, hf]   # then an explicit error
   model: hermes3:3b              # small enough for a 4 GB laptop
+  ollama:
+    base_url: http://127.0.0.1:11434   # or set OLLAMA_BASE_URL / OLLAMA_HOST
+    autostart: true                    # run `ollama serve` if it is not running
+    autostart_timeout: 20              # seconds to wait after starting it
   cost_policy: free              # refuse anything that could bill money
+
+harness:
+  approval: ask                  # ask | strict | auto (see docs/HARNESS.md)
+  workspace_roots: ["."]         # writes inside these need no approval
+  max_failures_per_tool: 2       # loop breaker, per turn
+  audit_path: logs/audit.jsonl   # one JSON line per decision
 
 browser:
   engine_order: [playwright, selenium, cdp, screen]
@@ -595,7 +722,7 @@ memory:
   long_term: {embedding_provider: auto, dedupe_threshold: 0.9}
 ```
 
-Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_TRASH_DIR`, `JARVIS_CHROME_PATH`, `JARVIS_PROFILE`, `JARVIS_API_HOST/PORT/TOKEN`, plus the provider keys (`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `HUGGINGFACE_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`).
+Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_TRASH_DIR`, `JARVIS_CHROME_PATH`, `JARVIS_PROFILE`, `JARVIS_API_HOST/PORT/TOKEN`, plus the provider keys (`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `HUGGINGFACE_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`).
 
 ---
 
@@ -609,7 +736,7 @@ Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_T
 | cursor/typing does nothing on Linux | `apt-get install xdotool` (or `ydotool` on Wayland) |
 | `browser: needs Chrome` | `pip install playwright && playwright install chromium` |
 | OCR returns nothing | `apt-get install tesseract-ocr` + `pip install pytesseract` |
-| `no API key` for every LLM | `ollama serve && ollama pull hermes3:3b`, or set one free key |
+| `no API key` for every LLM | `ollama pull hermes3:3b` (JARVIS starts `ollama serve` itself), or set one free key |
 | search finds nothing | keyless DDG/Jina need outbound network; a key is faster |
 | first response is slow | first ollama call loads the model into RAM (normal) |
 

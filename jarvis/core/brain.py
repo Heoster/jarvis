@@ -73,6 +73,18 @@ TOOL_KEYWORDS: Dict[str, Tuple[str, ...]] = {
 
 _ALWAYS_ON = ("utility", "memory")
 
+_KEYWORD_RES: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _keyword_hit(word: str, lowered: str) -> bool:
+    """Whole-word match with an optional suffix (``open`` → ``opened``, ``tab`` → ``tabs``)."""
+    pattern = _KEYWORD_RES.get(word)
+    if pattern is None:
+        pattern = re.compile(r"(?<![a-z0-9])" + re.escape(word)
+                             + r"(?:s|es|ed|d|ing|er|ers)?(?![a-z0-9])")
+        _KEYWORD_RES[word] = pattern
+    return pattern.search(lowered) is not None
+
 
 @dataclass
 class ThinkingTrace:
@@ -101,6 +113,12 @@ class ThinkingTrace:
         if self.fallback_from:
             bits.append(f"fallback from {self.fallback_from}")
         return " · ".join(bits)
+
+
+_SMALLTALK_RE = re.compile(
+    r"^(h+i+|hello|hey+|yo|namaste|namaskar|good (morning|afternoon|evening|night)|"
+    r"thanks?|thank you|thx|ok|okay|bye|ty|kaise ho|kya haal hai|how are you"
+    r"|how r u)[\s!.?]*$")
 
 
 class Brain:
@@ -132,13 +150,18 @@ class Brain:
         log.info(f"bound {len(tools)} tools")
 
     def categories_for(self, text: str) -> List[str]:
-        """Rank categories by how strongly the message matches their keywords."""
+        """Rank categories by how strongly the message matches their keywords.
+
+        Keywords match whole words (with a plural/tense suffix allowed), not raw
+        substrings: "display" must not wake the browser toolbox, "happy" must not
+        wake the screen toolbox, "password" must not wake the word-list tools.
+        """
         lowered = (text or "").lower()
         scored: List[tuple[float, str]] = []
         for category, words in TOOL_KEYWORDS.items():
             score = 0.0
             for word in words:
-                if word in lowered:
+                if _keyword_hit(word, lowered):
                     # longer keywords are far more specific ("screenshot" > "app")
                     score += 1.0 + (0.4 * min(len(word), 12) / 12)
             if score:
@@ -166,6 +189,9 @@ class Brain:
             return pool
 
         lowered = (message or "").lower()
+        # small talk needs no tools; binding them only gives the model a list to recite
+        if _SMALLTALK_RE.match(lowered.strip()):
+            return []
         ranked_categories = self.categories_for(message)
         category_score = {name: len(ranked_categories) - index
                           for index, name in enumerate(ranked_categories)}

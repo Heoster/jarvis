@@ -26,6 +26,9 @@ from .long_term import LongTermMemory, MemoryTier
 
 log = get_logger("skills")
 
+#: the repo's ``skills/`` folder: ships the built-in workflows
+BUILTIN_DIR = Path(__file__).resolve().parents[2] / "skills"
+
 __all__ = ["Skill", "SkillStep", "SkillLibrary"]
 
 
@@ -89,12 +92,18 @@ class Skill:
         )
 
     def outline(self, limit: int = 6) -> str:
-        lines = [f"{i}. {step.tool}({_short_args(step.args)})"
-                 for i, step in enumerate(self.steps[:limit], 1)]
+        lines = []
+        for i, step in enumerate(self.steps[:limit], 1):
+            if step.tool:
+                lines.append(f"{i}. {step.tool}({_short_args(step.args)})"
+                             + (f" — {truncate(step.note, 90)}" if step.note else ""))
+            else:  # a judgement step: no tool, just what to do with the results
+                lines.append(f"{i}. (no tool) {truncate(step.note, 120)}")
         return "\n".join(lines)
 
     def is_macro(self) -> bool:
-        return bool(self.steps) and all(step.deterministic for step in self.steps)
+        return bool(self.steps) and all(step.tool and step.deterministic
+                                        for step in self.steps)
 
 
 def _short_args(args: Mapping[str, Any], limit: int = 60) -> str:
@@ -128,17 +137,33 @@ class SkillLibrary:
         return self.directory / f"{sanitize_filename(name.lower().replace(' ', '_'))}.json"
 
     def load_all(self) -> int:
+        """Load built-in workflows (shipped in the repo) and then learned skills.
+
+        Learned skills load last, so a learned skill with the same name overrides a
+        built-in one.  The built-in folder is always read, even when the operator
+        points ``skills.directory`` somewhere else.
+        """
         count = 0
-        for path in sorted(self.directory.glob("*.json")):
+        folders = [BUILTIN_DIR]
+        if self.directory.resolve() != BUILTIN_DIR.resolve():
+            folders.append(self.directory)
+        paths = [path for folder in folders for path in sorted(folder.glob("*.json"))]
+        for path in paths:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                skill = Skill.from_dict(data)
-                if not skill.id:
-                    skill.id = path.stem
-                self.skills[skill.name.lower()] = skill
-                count += 1
             except Exception as exc:
                 log.warning(f"cannot load skill {path.name}: {exc}")
+                continue
+            # a file holds one skill (learned) or a list of them (built-in workflows)
+            for item in data if isinstance(data, list) else [data]:
+                try:
+                    skill = Skill.from_dict(item)
+                    if not skill.id:
+                        skill.id = path.stem
+                    self.skills[skill.name.lower()] = skill
+                    count += 1
+                except Exception as exc:
+                    log.warning(f"cannot load skill in {path.name}: {exc}")
         if count:
             log.debug(f"loaded {count} skill(s)")
         return count
@@ -220,7 +245,7 @@ class SkillLibrary:
             return []
         scored: List[tuple[float, Skill]] = []
         for skill in self.skills.values():
-            haystack = " ".join([skill.name, skill.trigger, skill.description,
+            haystack = " ".join([skill.name.replace("_", " "), skill.trigger, skill.description,
                                  " ".join(skill.tags)]).lower()
             words = set(re.findall(r"[a-z0-9_]+", haystack))
             if not words:
@@ -245,8 +270,9 @@ class SkillLibrary:
         parts = ["## LEARNED SKILLS THAT FIT THIS REQUEST"]
         for skill in matches:
             parts.append(f"* {skill.name} (used {skill.uses}×, "
-                         f"{int(skill.success_rate * 100)}% success)\n"
-                         f"{skill.outline(4)}")
+                         f"{int(skill.success_rate * 100)}% success) — "
+                         f"{truncate(skill.description, 120)}\n"
+                         f"{skill.outline(8)}")
         return "\n".join(parts)
 
     def list(self, limit: int = 50) -> List[Skill]:

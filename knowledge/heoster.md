@@ -27,7 +27,7 @@ when something would cost money.
 | Languages | JavaScript, TypeScript, Python, HTML/CSS |
 | Frontend | React, Next.js, Vite, TailwindCSS, GSAP |
 | Backend | Node.js, Express, Firebase, MongoDB, PostgreSQL |
-| AI | LangChain, Ollama, Groq, Cerebras, Gemini, Hugging Face, OpenRouter |
+| AI | LangChain, Ollama, Groq, Gemini, Hugging Face, OpenRouter |
 | Ops | Git/GitHub, Docker, Vercel, Linux, Windows |
 
 ## Projects

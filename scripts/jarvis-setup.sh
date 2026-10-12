@@ -66,6 +66,6 @@ cat <<'MSG'
    python -m jarvis              # start chatting
 
    # or use a free cloud key instead of Ollama (add to .env):
-   #   GROQ_API_KEY=...  CEREBRAS_API_KEY=...  GEMINI_API_KEY=...
+   #   GROQ_API_KEY=...  GEMINI_API_KEY=...  OPENROUTER_API_KEY=...
 
 MSG

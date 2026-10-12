@@ -52,6 +52,10 @@ from .user_profile import UserProfileStore
 
 log = get_logger("memory")
 
+# answers the orchestrator writes when a turn did not succeed; never learn from these
+_FAILED_ANSWERS = ("(no answer", "The action did not succeed", "I did not run a tool",
+                   "I could not finish")
+
 __all__ = ["MemoryManager", "Recall", "get_memory_manager"]
 
 
@@ -234,9 +238,12 @@ class MemoryManager:
 
         learned = self.profile.observe(user_input)
         skill = None
-        if len(calls) >= 3 and stored is not None:
-            skill = self.skills.learn_from_trace(user_input, calls,
-                                                 success=bool(response))
+        # Learn a recipe only from a turn that worked: every tool call succeeded and
+        # the answer is real.  A failed or empty turn must not become a "skill".
+        worked = (bool(calls) and all(c.get("ok", True) for c in calls)
+                  and bool(response) and not response.startswith(_FAILED_ANSWERS))
+        if len(calls) >= 3 and stored is not None and worked:
+            skill = self.skills.learn_from_trace(user_input, calls, success=True)
 
         with self._lock:
             self._turns_since_consolidation += 1

@@ -17,8 +17,9 @@ def test_config_loads_defaults(home, monkeypatch):
     cfg = load_config(refresh=True)
     assert cfg["jarvis"]["operator"] == "Heoster"
     assert cfg["jarvis"]["cost_policy"] == "free"
-    assert cfg["llm"]["fallback_chain"][0] == "ollama"
-    assert "stub" in cfg["llm"]["fallback_chain"]
+    assert cfg["llm"]["fallback_chain"] == ["ollama", "groq", "gemini", "openrouter", "hf"]
+    assert "stub" not in cfg["llm"]["fallback_chain"]
+    assert "cerebras" not in cfg["llm"]["fallback_chain"]
     assert cfg["context"]["max_budget"] >= 4000
     assert cfg["screen"]["vision_model"] is False
 
