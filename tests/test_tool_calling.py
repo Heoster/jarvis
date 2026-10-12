@@ -126,7 +126,8 @@ def test_claimed_action_without_any_tool_is_flagged_not_believed(config):
         {"content": "I played the song and it is playing."},              # still no tool
     ], (True, ""))
 
-    events = _run(orchestrator, "play tarre")
+    # not a play request (those fall back to play_song, tested below), so no forced call
+    events = _run(orchestrator, "send the report to bob")
     assert calls_run == []
     assert orchestrator.last_result.answer.startswith("I did not run a tool")
     assert any(e.type == "error" and "nothing was done" in e.text for e in events)
@@ -175,4 +176,17 @@ def test_loop_that_never_answers_says_what_happened(config):
     answer = orchestrator.last_result.answer
     assert answer.startswith("I could not finish this"), answer
     assert "calculate" in answer
+    orchestrator.shutdown()
+
+
+def test_play_request_without_a_tool_call_runs_play_song(config):
+    orchestrator, calls_run = _orchestrator(config, [
+        {"content": "Sure, I will play it now."},      # no tool
+        {"content": "Playing pasuri for you."},         # still no tool, after the nudge
+    ], (True, "opened"))
+
+    events = _run(orchestrator, "play pasuri on youtube")
+    assert [c["name"] for c in calls_run] == ["play_song"]
+    assert calls_run[0]["args"] == {"query": "pasuri"}
+    assert any(e.type == "notice" and "running play_song" in e.text for e in events)
     orchestrator.shutdown()

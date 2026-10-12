@@ -455,6 +455,15 @@ character ceiling (default 12000).
 
 ## Play a song (URL injection, verification, memory)
 
+**The pipeline for "play a song"** (`play_song`, the first choice):
+
+1. build the YouTube search URL from the song name: `https://www.youtube.com/results?search_query=…`
+2. read that results page with **Jina Reader** (`r.jina.ai`), no browser needed
+3. take the **first trusted link** in search order: a `watch?v=` or `youtu.be/` video on YouTube hosts (channels, ads and other sites are skipped)
+4. open that video in Chrome with `browse_open` and report the title and URL it opened
+
+`media_play` does the same search through the browser and checks the player state. Use it when playback must be verified. If the model does not call a tool for a play request, JARVIS runs `play_song` itself, so "play X" never ends as a text-only reply.
+
 ```bash
 python -m jarvis tool media_play '{"query":"kesariya arijit singh"}'
 python -m jarvis tool media_play '{}'                    # replay the last song

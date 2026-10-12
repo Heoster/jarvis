@@ -25,27 +25,27 @@ def step(tool: str, _note: str = "", **args):
 WORKFLOWS = [
     {
         "name": "open_youtube_and_play",
-        "description": "Open YouTube, find a song or video and start playback.",
-        "trigger": "open youtube yt play song video music gaana bajao chalao",
+        "description": "Play a song: search YouTube, read the results through Jina, open the first trusted video.",
+        "trigger": "play open youtube yt song video music bajao chalao sunao listen",
         "tags": ["media", "browser"],
         "steps": [
-            step("media_play", "Opens the results in a new tab, plays the best match and "
-                 "reports the title it really played. Say that title, not the request.",
-                 query="{{song}}", new_tab=True, press_play=True, remember=True),
+            step("play_song", "One call does the whole pipeline: builds the YouTube search URL, "
+                 "reads it with Jina Reader, takes the first trusted watch link and opens it. "
+                 "Pass only the song name as query.", query="{{song}}", new_tab=True),
+            step("", "Report the title and URL that play_song opened. Do not say it is playing "
+                 "unless media_play has confirmed the player state."),
         ],
     },
     {
         "name": "play_random_song",
-        "description": "Play a random song: pick one from the media history, or a popular "
-                       "search when the history is empty.",
+        "description": "Play a random song: pick one from the play history, or a popular search.",
         "trigger": "play random song any music shuffle yt youtube surprise me",
         "tags": ["media", "browser"],
         "steps": [
-            step("media_history", "Get recent plays. Pick one entry at random. If the list is "
-                 "empty, use query \"popular songs\" in the next step.", limit=20),
-            step("media_play", "Play the picked title (or the popular-songs query).",
-                 query="{{random_pick_or_popular_songs}}", new_tab=True, press_play=True,
-                 remember=True),
+            step("media_history", "Get recent plays. Pick one title at random. If the list is "
+                 "empty, use the query \"popular songs\" in the next step.", limit=20),
+            step("play_song", "Play the picked title (or the popular-songs query).",
+                 query="{{random_pick_or_popular_songs}}", new_tab=True),
         ],
     },
     {

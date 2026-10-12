@@ -259,6 +259,18 @@ class Orchestrator:
                     {"kind": "fallback", "from": response.fallback_from,
                      "to": response.provider})
 
+            # Asked once and still no tool call on a play request: run play_song ourselves.
+            bound_names = {getattr(t, "name", "") for t in bound_tools}
+            if (nudged and action_request and not response.has_tool_calls
+                    and not tool_call_log and "play_song" in bound_names):
+                query = forced_play_query(user_input)
+                if query:
+                    response.tool_calls = [{"id": "direct-1", "name": "play_song",
+                                            "args": {"query": query}}]
+                    yield TurnEvent("notice", "↻ no tool call from the model — running "
+                                    f"play_song for “{query}” directly",
+                                    {"kind": "forced", "tool": "play_song"})
+
             # An action request answered in plain text: ask once more before showing it.
             if (action_request and not nudged and not response.has_tool_calls
                     and not tool_call_log):
@@ -448,6 +460,30 @@ _NUDGE = ("This request needs an action and no tool has run yet. Call the matchi
           "not say the action is done before a tool confirms it.")
 _UNVERIFIED = ("I did not run a tool for this, so nothing was actually done. "
                "Please ask again, or name the action explicitly.")
+
+
+_PLAY_RE = re.compile(
+    r"\b(?:play|bajao|chalao|sunao)\s+(?:me\s+)?(?:a\s+|an\s+|the\s+|some\s+)?(?P<q>[^?!.\n]+?)"
+    r"(?:\s+(?:on|in|from)\s+(?:youtube\s+music|youtube|yt)\b.*)?\s*$", re.IGNORECASE)
+_NOT_A_SONG_RE = re.compile(r"^(my|that|it|this|again|something|anything)\b", re.IGNORECASE)
+
+
+def forced_play_query(user_input: str) -> str:
+    """The song to search for when the operator asked to play one, else ``""``.
+
+    "play pasuri on youtube" -> "pasuri"; "open yt and play a random song" ->
+    "random song".  "play my fav song" is left alone: it needs memory, not a search.
+    """
+    match = _PLAY_RE.search(user_input or "")
+    if not match:
+        return ""
+    query = re.sub(r"\s+(song|video|music|track)$", "", match.group("q").strip(),
+                   flags=re.IGNORECASE).strip()
+    if not query or _NOT_A_SONG_RE.match(query):
+        return ""
+    if query.lower() == "random":  # "play a random song": a random pick, not the word "random"
+        return "popular songs"
+    return query
 
 
 def needs_action(user_input: str) -> bool:

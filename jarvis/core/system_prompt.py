@@ -34,6 +34,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ..persona import OPERATOR, OperatorProfile
 from ..utils.logger import get_logger
+from .tool_guide import guide_lines
 
 log = get_logger("core.system_prompt")
 
@@ -480,13 +481,17 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
     env = environment if environment is not None else collect_environment(config)
 
     names: List[str] = []
+    descriptions: Dict[str, str] = {}
     for item in tools or []:
         name = getattr(item, "name", None)
         if name is None and isinstance(item, Mapping):
             function = item.get("function") if isinstance(item.get("function"), Mapping) else {}
             name = function.get("name") or item.get("name")
+            descriptions[str(name or "")] = str(function.get("description") or "")
         if name:
             names.append(str(name))
+            if str(name) not in descriptions:
+                descriptions[str(name)] = str(getattr(item, "description", "") or "")
 
     def tool_line() -> str:
         unique = sorted(set(names))
@@ -495,9 +500,12 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
         if len(unique) > 40:
             return (f"\n- Bound this turn: all {len(unique)} registered tools "
                     "(their schemas are attached); call them by exact name.")
+        guide = guide_lines(unique, descriptions)
+        guide_block = ("\n  When to use each bound tool:\n  " + "\n  ".join(guide)
+                       if guide else "")
         return ("\n- Bound this turn: " + ", ".join(unique)
                 + "\n  (only these exist right now; ask for another by describing "
-                  "the need)")
+                  "the need)" + guide_block)
 
     category_lines: List[str] = []
     for category, count in sorted(env.tool_categories.items(), key=lambda item: -item[1]):
