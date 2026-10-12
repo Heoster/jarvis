@@ -26,24 +26,38 @@ brain:
 
 # ── LLM Backend + Auto-Fallback Chain ───────────────────────────────────────
 llm:
-  provider: "auto"                 # auto | ollama | groq | cerebras | openrouter | gemini | hf | stub
+  provider: "auto"                 # auto | ollama | groq | gemini | openrouter | hf
   model: "hermes3:3b"              # or qwen2.5:3b, llama3.2:3b, qwen2.5:7b
-  base_url: "http://localhost:11434"
+  base_url: "http://localhost:11434"   # legacy; prefer llm.ollama.base_url below
+  # Ollama (local brain + embeddings). URL precedence: OLLAMA_BASE_URL env →
+  # OLLAMA_HOST env → llm.ollama.base_url → llm.base_url → 127.0.0.1:11434.
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+    autostart: true          # run `ollama serve` in the background when it is not running
+    autostart_timeout: 20    # seconds to wait for it to answer after starting it
   temperature: 0.3
   max_tokens: 2048                 # max generation per turn
   context_window: 16384            # total budget we target
   request_timeout: 120
-  # Ordered fallback chain. JARVIS walks down this list on any failure,
-  # rate-limit, quota exhaustion or unhealthy probe.
-  fallback_chain: ["ollama", "groq", "cerebras", "openrouter", "gemini", "hf", "stub"]
+  # Ordered fallback chain: ollama (only if served) → groq → gemini → openrouter →
+  # hf → then an explicit error. JARVIS walks down this list on any failure,
+  # rate-limit, quota exhaustion or unhealthy probe. No canned/offline answers.
+  fallback_chain: ["ollama", "groq", "gemini", "openrouter", "hf"]
   # Provider-specific models used when the primary chain member is selected.
   provider_models:
     ollama: "hermes3:3b"
     groq: "llama-3.3-70b-versatile"
-    cerebras: "llama3.1-8b"
-    openrouter: "meta-llama/llama-3.3-70b-instruct:free"
-    gemini: "gemini-2.0-flash-lite"
-    hf: "meta-llama/Llama-3.2-3B-Instruct"
+    openrouter: "openrouter/free"           # OpenRouter's free-model router
+    gemini: "gemini-3.5-flash-lite"         # 2.0-flash(-lite) was shut down 2026-06-01
+    hf: "Qwen/Qwen2.5-7B-Instruct"          # must be served by an HF provider you enabled
+  # Per-provider model retries: when a model is retired or not served for your key
+  # (HTTP 404 / HF model_not_supported) the next model in the list is tried before
+  # the provider is marked down. Leave unset to use the built-in lists.
+  fallback_models:
+    groq: ["llama-3.1-8b-instant"]
+    openrouter: ["openai/gpt-oss-120b:free", "qwen/qwen3-next-80b-a3b-instruct:free"]
+    gemini: ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
+    hf: ["openai/gpt-oss-20b", "meta-llama/Llama-3.1-8B-Instruct"]
   api_manager:
     health_cache_seconds: 90       # how long a probe result is trusted
     probe_on_start: true

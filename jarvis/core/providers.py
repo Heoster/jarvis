@@ -9,12 +9,17 @@ Supported, all on free tiers:
 ============  ==========================================================
 ``ollama``    local runtime (unlimited, works offline)
 ``groq``      OpenAI-compatible, very fast free tier
-``cerebras``  OpenAI-compatible, free tier
-``openrouter``OpenAI-compatible, ``:free`` model variants
 ``gemini``    Google AI Studio free tier (different JSON shape)
-``hf``        Hugging Face serverless inference
-``stub``      offline template responder — the guaranteed last resort
+``openrouter``OpenAI-compatible, free models (``openrouter/free`` router)
+``hf``        Hugging Face inference router (OpenAI-compatible)
+``stub``      offline template responder — test/dev only, never in the chain
 ============  ==========================================================
+
+The production chain is ``ollama → groq → gemini → openrouter → hf``; when
+every member fails the API manager raises and the operator sees the error.
+Models that a provider has retired or does not serve (HTTP 404, or HF's
+``model_not_supported``) are skipped inside that provider by trying the
+configured ``fallback_models`` before the provider is given up on.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..utils.logger import get_logger
+from .text_tool_calls import extract_text_tool_calls
 from ..utils.sanitizer import redact_secrets
 from .messages import (
     AIMessage, ensure_messages, normalise_role, text_of, to_openai_messages,
@@ -101,6 +107,10 @@ class ProviderSpec:
     capabilities: Tuple[str, ...] = ("chat", "tools")
     notes: str = ""
     docs: str = ""
+    # Extra models tried, in order, when the chosen model is retired or not
+    # served for this key (404 / model_not_supported). Overridable per provider
+    # via ``llm.<name>.fallback_models`` in config.yaml.
+    fallback_models: Tuple[str, ...] = ()
 
     def api_key(self, config: Mapping[str, Any]) -> str:
         section, _, key = self.config_path.partition(".")
@@ -154,40 +164,46 @@ PROVIDER_SPECS: Dict[str, ProviderSpec] = {
         priority=20, capabilities=("chat", "tools", "stream"),
         notes="fastest free inference, excellent tool calling",
         docs="https://console.groq.com/keys",
-    ),
-    "cerebras": ProviderSpec(
-        name="cerebras", kind="openai", base_url="https://api.cerebras.ai/v1",
-        default_model="llama3.1-8b", env_keys=("CEREBRAS_API_KEY",),
-        config_path="llm.cerebras.api_key", free_limits="free tier daily cap",
-        priority=30, capabilities=("chat", "tools"),
-        docs="https://cloud.cerebras.ai",
+        fallback_models=("llama-3.1-8b-instant",),
     ),
     "openrouter": ProviderSpec(
         name="openrouter", kind="openai", base_url="https://openrouter.ai/api/v1",
-        default_model="meta-llama/llama-3.3-70b-instruct:free",
+        # ``openrouter/free`` is OpenRouter's own router over the free pool, so it
+        # does not go stale the way individual ``:free`` slugs do (they are retired
+        # with a 404 — e.g. meta-llama/llama-3.3-70b-instruct:free in July 2026).
+        default_model="openrouter/free",
         env_keys=("OPENROUTER_API_KEY",), config_path="llm.openrouter.api_key",
-        free_limits="~50 req/day on :free models", priority=40,
+        free_limits="~50 req/day on free models", priority=40,
         capabilities=("chat", "tools"),
-        notes="many free model variants; keep ':free' suffix",
+        notes="free-model router; keep the ':free' suffix on explicit slugs",
         docs="https://openrouter.ai/keys",
+        fallback_models=("openai/gpt-oss-120b:free",
+                         "qwen/qwen3-next-80b-a3b-instruct:free"),
     ),
     "gemini": ProviderSpec(
         name="gemini", kind="gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta",
-        default_model="gemini-2.0-flash-lite",
+        # gemini-2.0-flash(-lite) was shut down on 2026-06-01 (404 for every key).
+        default_model="gemini-3.5-flash-lite",
         env_keys=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-        config_path="llm.gemini.api_key", free_limits="~1 500 req/day",
+        config_path="llm.gemini.api_key", free_limits="~1 500 req/day (Flash models)",
         priority=50, capabilities=("chat", "tools"),
         docs="https://aistudio.google.com/apikey",
+        fallback_models=("gemini-3.1-flash-lite", "gemini-2.5-flash-lite",
+                         "gemini-2.5-flash"),
     ),
     "hf": ProviderSpec(
         name="hf", kind="hf",
-        base_url="https://api-inference.huggingface.co",
-        default_model="meta-llama/Llama-3.2-3B-Instruct",
+        # The old api-inference.huggingface.co host is retired; the router is the
+        # OpenAI-compatible endpoint Hugging Face documents for chat.
+        base_url="https://router.huggingface.co/v1",
+        default_model="Qwen/Qwen2.5-7B-Instruct",
         env_keys=("HUGGINGFACE_API_KEY", "HF_TOKEN"), config_path="llm.hf.api_key",
         free_limits="serverless rate limited", priority=60,
-        capabilities=("chat",), notes="no tool calling — text only",
+        capabilities=("chat",),
+        notes="text only; a model is usable only if an enabled HF provider serves it",
         docs="https://huggingface.co/settings/tokens",
+        fallback_models=("openai/gpt-oss-20b", "meta-llama/Llama-3.1-8B-Instruct"),
     ),
     "stub": ProviderSpec(
         name="stub", kind="stub", requires_key=False, priority=999,
@@ -234,6 +250,23 @@ def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str],
         return resp.json()
     except ValueError as exc:
         raise LLMError("provider returned non-JSON", provider=provider) from exc
+
+
+_MODEL_UNAVAILABLE_MARKERS = (
+    "model_not_supported", "not supported by any provider", "model not found",
+    "not a valid model", "does not exist", "unavailable", "no longer available",
+    "decommissioned", "retired", "is not found", "model_not_found",
+)
+
+
+def is_model_unavailable(exc: LLMError) -> bool:
+    """True when the *model* (not the key or the network) is the problem."""
+    if exc.status == 404:
+        return True
+    if exc.status == 400:
+        text = str(exc).lower()
+        return any(marker in text for marker in _MODEL_UNAVAILABLE_MARKERS)
+    return False
 
 
 def _extract_openai_tool_calls(message: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -300,14 +333,53 @@ class BaseProvider:
 
     @property
     def base_url(self) -> str:
+        if self.name == "ollama":
+            from .ollama_runtime import resolve_base_url
+
+            return resolve_base_url(self.config)
         node = self.llm_cfg.get(self.name)
         if isinstance(node, Mapping) and node.get("base_url"):
             return str(node["base_url"]).rstrip("/")
-        if self.name == "ollama":
-            return str(os.environ.get("OLLAMA_BASE_URL")
-                       or self.llm_cfg.get("base_url")
-                       or self.spec.base_url).rstrip("/")
         return self.spec.base_url
+
+    @property
+    def model_candidates(self) -> List[str]:
+        """The configured model first, then the provider's fallback models."""
+        models = [self.model]
+        extra: Any = None
+        # config: llm.fallback_models.<provider>  (or llm.<provider>.fallback_models)
+        shared = self.llm_cfg.get("fallback_models")
+        if isinstance(shared, Mapping):
+            extra = shared.get(self.name)
+        node = self.llm_cfg.get(self.name)
+        if extra is None and isinstance(node, Mapping):
+            extra = node.get("fallback_models")
+        if extra is None:
+            extra = self.spec.fallback_models
+        for name in extra or []:
+            if name and str(name) not in models:
+                models.append(str(name))
+        return models
+
+    def _try_models(self, call: Any) -> LLMResponse:
+        """Run ``call(model)`` for each candidate until one is served.
+
+        Only "this model is not available to this key" errors move on to the
+        next model; auth, quota and network errors are raised immediately so the
+        API manager handles them as a provider-level failure.
+        """
+        last: Optional[LLMError] = None
+        for model in self.model_candidates:
+            try:
+                return call(model)
+            except LLMError as exc:
+                if not is_model_unavailable(exc):
+                    raise
+                last = exc
+                log.warning(f"{self.name}: model '{model}' not served for this key, "
+                            f"trying the next model")
+        raise last or LLMError("no model configured", provider=self.name,
+                               retryable=False)
 
     # credentials ----------------------------------------------------------
     @property
@@ -405,11 +477,25 @@ class OllamaProvider(BaseProvider):
 
     spec = PROVIDER_SPECS["ollama"]
 
+    def ensure_running(self) -> None:
+        """Start ``ollama serve`` if it is down and allowed; raise if still down."""
+        from .ollama_runtime import autostart_enabled, autostart_timeout
+        from .ollama_runtime import ensure_running as _ensure
+
+        ok, detail = _ensure(self.base_url, autostart=autostart_enabled(self.config),
+                             timeout=autostart_timeout(self.config))
+        if not ok:
+            raise LLMError(detail, provider=self.name)
+
     def _probe_impl(self) -> str:
         import httpx
 
-        with _client(4.0) as client:
-            resp = client.get(f"{self.base_url}/api/tags")
+        self.ensure_running()
+        try:
+            with _client(4.0) as client:
+                resp = client.get(f"{self.base_url}/api/tags")
+        except httpx.HTTPError as exc:
+            raise LLMError(f"not reachable at {self.base_url}: {exc}", provider=self.name) from exc
         if resp.status_code != 200:
             raise LLMError(f"ollama returned {resp.status_code}", provider=self.name)
         models = [m.get("name", "") for m in (resp.json().get("models") or [])]
@@ -440,8 +526,16 @@ class OllamaProvider(BaseProvider):
             payload["format"] = "json"
 
         start = time.perf_counter()
-        data = _post_json(f"{self.base_url}/api/chat", payload,
-                          {"Content-Type": "application/json"}, self.timeout, self.name)
+        try:
+            data = _post_json(f"{self.base_url}/api/chat", payload,
+                              {"Content-Type": "application/json"}, self.timeout, self.name)
+        except LLMError as exc:
+            if exc.status is not None:
+                raise
+            # connection refused / timeout: Ollama may have stopped since the probe
+            self.ensure_running()
+            data = _post_json(f"{self.base_url}/api/chat", payload,
+                              {"Content-Type": "application/json"}, self.timeout, self.name)
         latency = int((time.perf_counter() - start) * 1000)
 
         message = data.get("message") or {}
@@ -457,8 +551,13 @@ class OllamaProvider(BaseProvider):
             calls.append({"id": raw.get("id") or f"call_{len(calls)}",
                           "name": fn.get("name", ""), "args": dict(args or {})})
 
+        content = message.get("content") or ""
+        if not calls:
+            # small models often write the call as text; recover it, but only for bound tools
+            calls, content = extract_text_tool_calls(content, tools)
+
         return LLMResponse(
-            content=message.get("content") or "",
+            content=content,
             tool_calls=calls, provider=self.name, model=self.model,
             prompt_tokens=int(data.get("prompt_eval_count", 0) or 0),
             completion_tokens=int(data.get("eval_count", 0) or 0),
@@ -470,7 +569,7 @@ class OllamaProvider(BaseProvider):
 
 
 class OpenAICompatProvider(BaseProvider):
-    """Groq / Cerebras / OpenRouter / any ``/chat/completions`` endpoint."""
+    """Groq / OpenRouter / any ``/chat/completions`` endpoint."""
 
     def __init__(self, config: Mapping[str, Any], spec: ProviderSpec, *, timeout: float = 60.0):
         self.spec = spec
@@ -484,8 +583,6 @@ class OpenAICompatProvider(BaseProvider):
         return headers
 
     def _probe_impl(self) -> str:
-        import httpx
-
         key = self.next_key()
         with _client(8.0) as client:
             resp = client.get(f"{self.base_url}/models", headers=self.header(key))
@@ -499,50 +596,55 @@ class OpenAICompatProvider(BaseProvider):
             models = [m.get("id", "") for m in (resp.json().get("data") or [])]
         except Exception:
             models = []
-        wanted = self.model
-        if models and wanted and wanted not in models:
-            close = [m for m in models if wanted.split("/")[-1].split(":")[0] in m][:3]
-            if not close:
-                raise LLMError(f"model '{wanted}' not offered; try {', '.join(models[:3])}",
-                               provider=self.name, retryable=False)
-        return f"{len(models) or '✓'} model(s); using {wanted}"
+        candidates = self.model_candidates
+        if models and not any(model in models for model in candidates):
+            raise LLMError(f"none of {', '.join(candidates)} is offered; try "
+                           f"{', '.join(models[:3])}", provider=self.name, retryable=False)
+        return f"{len(models) or '✓'} model(s); using {candidates[0]}"
 
     def complete(self, messages: Sequence[Any], *, tools: Optional[Sequence[Any]] = None,
                  temperature: Optional[float] = None, max_tokens: Optional[int] = None,
                  json_mode: bool = False) -> LLMResponse:
         key = self.next_key()
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": to_openai_messages(ensure_messages(messages)),
-            "temperature": self._temperature(temperature),
-            "max_tokens": self._max_tokens(max_tokens),
-            "stream": False,
-        }
+        msgs = to_openai_messages(ensure_messages(messages))
         schemas = self._tool_schemas(tools)
-        if schemas and "tools" in self.spec.capabilities:
-            payload["tools"] = schemas
-            payload["tool_choice"] = "auto"
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
 
-        start = time.perf_counter()
-        data = _post_json(f"{self.base_url}/chat/completions", payload,
-                          self.header(key), self.timeout, self.name)
-        latency = int((time.perf_counter() - start) * 1000)
+        def call(model: str) -> LLMResponse:
+            payload: Dict[str, Any] = {
+                "model": model,
+                "messages": msgs,
+                "temperature": self._temperature(temperature),
+                "max_tokens": self._max_tokens(max_tokens),
+                "stream": False,
+            }
+            if schemas and "tools" in self.spec.capabilities:
+                payload["tools"] = schemas
+                payload["tool_choice"] = "auto"
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            start = time.perf_counter()
+            data = _post_json(f"{self.base_url}/chat/completions", payload,
+                              self.header(key), self.timeout, self.name)
+            latency = int((time.perf_counter() - start) * 1000)
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            usage = data.get("usage") or {}
+            content = text_of(message.get("content") or "")
+            calls = _extract_openai_tool_calls(message)
+            if not calls:
+                calls, content = extract_text_tool_calls(content, tools)
+            return LLMResponse(
+                content=content,
+                tool_calls=calls,
+                provider=self.name, model=str(data.get("model") or model),
+                prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+                total_tokens=int(usage.get("total_tokens", 0) or 0),
+                latency_ms=latency, finish_reason=str(choice.get("finish_reason", "")),
+                raw={"id": data.get("id")},
+            )
 
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        usage = data.get("usage") or {}
-        return LLMResponse(
-            content=text_of(message.get("content") or ""),
-            tool_calls=_extract_openai_tool_calls(message),
-            provider=self.name, model=str(data.get("model") or self.model),
-            prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
-            completion_tokens=int(usage.get("completion_tokens", 0) or 0),
-            total_tokens=int(usage.get("total_tokens", 0) or 0),
-            latency_ms=latency, finish_reason=str(choice.get("finish_reason", "")),
-            raw={"id": data.get("id")},
-        )
+        return self._try_models(call)
 
 
 class GeminiProvider(BaseProvider):
@@ -551,22 +653,24 @@ class GeminiProvider(BaseProvider):
     spec = PROVIDER_SPECS["gemini"]
 
     def _probe_impl(self) -> str:
-        import httpx
-
         key = self.next_key()
-        url = f"{self.base_url}/models?key={key}"
+        # the key travels in a header, never in the URL, so it cannot leak into logs
         with _client(8.0) as client:
-            resp = client.get(url)
+            resp = client.get(f"{self.base_url}/models", headers={"x-goog-api-key": key})
         if resp.status_code in (400, 401, 403):
             raise LLMError("invalid API key", provider=self.name, retryable=False)
         if resp.status_code >= 400:
             raise LLMError(f"probe HTTP {resp.status_code}", provider=self.name)
-        models = [m.get("name", "").replace("models/", "")
-                  for m in (resp.json().get("models") or [])]
-        if self.model and models and self.model not in models:
-            raise LLMError(f"model '{self.model}' unavailable; e.g. {', '.join(models[:3])}",
-                           provider=self.name, retryable=False)
-        return f"{len(models)} model(s); using {self.model}"
+        try:
+            models = [m.get("name", "").replace("models/", "")
+                      for m in (resp.json().get("models") or [])]
+        except Exception:
+            models = []
+        candidates = self.model_candidates
+        if models and not any(model in models for model in candidates):
+            raise LLMError(f"none of {', '.join(candidates)} is offered; e.g. "
+                           f"{', '.join(models[:3])}", provider=self.name, retryable=False)
+        return f"{len(models)} model(s); using {candidates[0]}"
 
     @staticmethod
     def _convert(messages: Sequence[Any]) -> List[Dict[str, Any]]:
@@ -618,42 +722,51 @@ class GeminiProvider(BaseProvider):
                                              {"type": "object", "properties": {}})}
                 for s in schemas]}]
 
-        url = f"{self.base_url}/models/{self.model}:generateContent?key={key}"
-        start = time.perf_counter()
-        data = _post_json(url, payload, {"Content-Type": "application/json"},
-                          self.timeout, self.name)
-        latency = int((time.perf_counter() - start) * 1000)
+        def call(model: str) -> LLMResponse:
+            start = time.perf_counter()
+            data = _post_json(f"{self.base_url}/models/{model}:generateContent", payload,
+                              {"Content-Type": "application/json", "x-goog-api-key": key},
+                              self.timeout, self.name)
+            latency = int((time.perf_counter() - start) * 1000)
+            candidate = (data.get("candidates") or [{}])[0]
+            parts = ((candidate.get("content") or {}).get("parts") or [])
+            text_parts, calls = [], []
+            for part in parts:
+                if "text" in part:
+                    text_parts.append(part["text"])
+                if "functionCall" in part:
+                    fn = part["functionCall"]
+                    calls.append({"id": f"call_{len(calls)}_{int(time.time()*1000)%100000}",
+                                  "name": fn.get("name", ""),
+                                  "args": dict(fn.get("args") or {})})
+            usage = data.get("usageMetadata") or {}
+            return LLMResponse(
+                content="".join(text_parts), tool_calls=calls,
+                provider=self.name, model=model,
+                prompt_tokens=int(usage.get("promptTokenCount", 0) or 0),
+                completion_tokens=int(usage.get("candidatesTokenCount", 0) or 0),
+                total_tokens=int(usage.get("totalTokenCount", 0) or 0),
+                latency_ms=latency, finish_reason=str(candidate.get("finishReason", "")),
+            )
 
-        candidate = (data.get("candidates") or [{}])[0]
-        parts = ((candidate.get("content") or {}).get("parts") or [])
-        text_parts, calls = [], []
-        for part in parts:
-            if "text" in part:
-                text_parts.append(part["text"])
-            if "functionCall" in part:
-                fn = part["functionCall"]
-                calls.append({"id": f"call_{len(calls)}_{int(time.time()*1000)%100000}",
-                              "name": fn.get("name", ""),
-                              "args": dict(fn.get("args") or {})})
-        usage = data.get("usageMetadata") or {}
-        return LLMResponse(
-            content="".join(text_parts), tool_calls=calls,
-            provider=self.name, model=self.model,
-            prompt_tokens=int(usage.get("promptTokenCount", 0) or 0),
-            completion_tokens=int(usage.get("candidatesTokenCount", 0) or 0),
-            total_tokens=int(usage.get("totalTokenCount", 0) or 0),
-            latency_ms=latency, finish_reason=str(candidate.get("finishReason", "")),
-        )
+        return self._try_models(call)
 
 
 class HFProvider(BaseProvider):
-    """Hugging Face serverless inference (chat completions compatible)."""
+    """Hugging Face inference router (OpenAI-compatible chat completions).
+
+    Failure modes this adapter handles:
+
+    * the router URL comes from the spec / ``llm.hf.base_url`` (it used to be
+      hard-coded, so config changes were silently ignored);
+    * ``400 model_not_supported`` means "no provider you enabled serves this
+      model" — the next candidate model is tried instead of failing the turn;
+    * the probe tolerates a non-JSON body instead of crashing the health check.
+    """
 
     spec = PROVIDER_SPECS["hf"]
 
     def _probe_impl(self) -> str:
-        import httpx
-
         key = self.next_key()
         with _client(8.0) as client:
             resp = client.get("https://huggingface.co/api/whoami-v2",
@@ -662,35 +775,48 @@ class HFProvider(BaseProvider):
             raise LLMError("invalid HF token", provider=self.name, retryable=False)
         if resp.status_code >= 400:
             raise LLMError(f"probe HTTP {resp.status_code}", provider=self.name)
-        return f"token ok for {resp.json().get('name', 'unknown')}"
+        try:
+            name = resp.json().get("name", "unknown")
+        except ValueError:
+            name = "unknown"
+        return f"token ok for {name}; model {self.model_candidates[0]}"
 
     def complete(self, messages: Sequence[Any], *, tools: Optional[Sequence[Any]] = None,
                  temperature: Optional[float] = None, max_tokens: Optional[int] = None,
                  json_mode: bool = False) -> LLMResponse:
         key = self.next_key()
-        payload = {
-            "model": self.model,
-            "messages": to_openai_messages(ensure_messages(messages)),
-            "temperature": self._temperature(temperature),
-            "max_tokens": self._max_tokens(max_tokens),
-            "stream": False,
-        }
-        url = f"https://router.huggingface.co/v1/chat/completions"
-        start = time.perf_counter()
-        data = _post_json(url, payload, self.header(key), self.timeout, self.name)
-        latency = int((time.perf_counter() - start) * 1000)
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        usage = data.get("usage") or {}
-        return LLMResponse(
-            content=text_of(message.get("content") or ""),
-            tool_calls=_extract_openai_tool_calls(message),
-            provider=self.name, model=str(data.get("model") or self.model),
-            prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
-            completion_tokens=int(usage.get("completion_tokens", 0) or 0),
-            total_tokens=int(usage.get("total_tokens", 0) or 0),
-            latency_ms=latency, finish_reason=str(choice.get("finish_reason", "")),
-        )
+        msgs = to_openai_messages(ensure_messages(messages))
+
+        def call(model: str) -> LLMResponse:
+            payload: Dict[str, Any] = {
+                "model": model,
+                "messages": msgs,
+                "temperature": self._temperature(temperature),
+                "max_tokens": self._max_tokens(max_tokens),
+                "stream": False,
+            }
+            start = time.perf_counter()
+            data = _post_json(f"{self.base_url}/chat/completions", payload,
+                              self.header(key), self.timeout, self.name)
+            latency = int((time.perf_counter() - start) * 1000)
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            usage = data.get("usage") or {}
+            content = text_of(message.get("content") or "")
+            calls = _extract_openai_tool_calls(message)
+            if not calls:
+                calls, content = extract_text_tool_calls(content, tools)
+            return LLMResponse(
+                content=content,
+                tool_calls=calls,
+                provider=self.name, model=str(data.get("model") or model),
+                prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+                total_tokens=int(usage.get("total_tokens", 0) or 0),
+                latency_ms=latency, finish_reason=str(choice.get("finish_reason", "")),
+            )
+
+        return self._try_models(call)
 
 
 class StubProvider(BaseProvider):
@@ -787,8 +913,8 @@ class StubProvider(BaseProvider):
                 "To give me a brain (all free):\n"
                 "1. `ollama serve` then `ollama pull hermes3:3b`  — local, no key, no cost\n"
                 "2. or set a free key: `export GROQ_API_KEY=...` "
-                "(console.groq.com), `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, "
-                "`GEMINI_API_KEY`\n\n"
+                "(console.groq.com), `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, "
+                "`HUGGINGFACE_API_KEY`\n\n"
                 "Everything that does not need a model still works: browser control, "
                 "screen control, search, memory, files.\n\n"
                 f"_(you said: {last_user[:200]})_"

@@ -19,6 +19,8 @@ looping 3B model cannot spin forever on a 2-core CPU.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -29,6 +31,8 @@ from ..utils.logger import get_logger
 from ..utils.sanitizer import truncate
 from ..tools.registry import ToolRegistry
 from .brain import Brain
+from .providers import LLMResponse
+from .harness import ApprovalRequest, FailureBreaker, Harness, verify_result
 from .messages import (
     AIMessage, HumanMessage, Message, SystemMessage, ToolMessage, ensure_messages,
     normalise_role, text_of,
@@ -103,6 +107,10 @@ class Orchestrator:
             if isinstance(self.config.get("agent"), Mapping) else True)
 
         self.registry = registry or ToolRegistry()
+        from ..tools.pipelines import bind_registry as _bind_pipelines
+
+        _bind_pipelines(self.registry)
+        self.harness = Harness(self.config)
         self.brain = brain or Brain(self.config)
         self.memory = memory or get_memory_manager(self.config)
         self.session_started = False
@@ -143,6 +151,10 @@ class Orchestrator:
         """Load tools, bind them, warm up memory and probe providers."""
         if not self.registry.get_all_tools():
             self.registry.load_all_default_tools(self.config, verbose=verbose)
+        # start `ollama serve` in the background if it is not running (non-blocking)
+        from .ollama_runtime import start_in_background
+
+        start_in_background(self.config)
         self.brain.bind_tools(self.registry.get_all_tools())
         self.brain.attach_registry(self.registry)
         report = self.memory.bootstrap(ingest_knowledge=ingest_knowledge,
@@ -215,8 +227,14 @@ class Orchestrator:
 
         tool_call_log: List[Dict[str, Any]] = []
         seen_calls: Dict[str, int] = {}
+        breaker = FailureBreaker(self.harness.max_failures)
+        decided: Dict[int, Any] = {}
         deadline = time.monotonic() + self.turn_timeout
         final_text = ""
+        action_request = needs_action(user_input) and bool(bound_tools)
+        route = direct_route(user_input)
+        direct_answer = False
+        nudged = False
 
         for iteration in range(1, self.max_iterations + 1):
             result.iterations = iteration
@@ -227,8 +245,18 @@ class Orchestrator:
 
             yield TurnEvent("thinking", f"… reasoning (step {iteration})",
                             {"iteration": iteration})
+            direct_now = iteration == 1 and route is not None and route[0] in self.registry
             try:
-                response = await self.brain.athink(messages, tools=bound_tools)
+                if direct_now:
+                    response = LLMResponse(
+                        content="", tool_calls=[{"id": "route-1", "name": route[0],
+                                                 "args": dict(route[1])}],
+                        provider="router", model="direct-route")
+                    direct_answer = True
+                    yield TurnEvent("notice", f"➜ routed to {route[0]} (no model step needed)",
+                                    {"kind": "route", "tool": route[0]})
+                else:
+                    response = await self.brain.athink(messages, tools=bound_tools)
             except Exception as exc:
                 # the API manager already tried every provider
                 log.error(f"LLM call failed: {exc}")
@@ -244,12 +272,34 @@ class Orchestrator:
                                 self.brain.api.events[-3:]]
             result.context_line = self.brain.trace.context_line
             if response.fallback_from:
+                why = self._fallback_reason(response.fallback_from)
                 yield TurnEvent(
                     "notice",
-                    f"🔀 {response.fallback_from} failed → answered with "
+                    f"🔀 {response.fallback_from} failed{why} → answered with "
                     f"{response.provider} (automatic fallback)",
                     {"kind": "fallback", "from": response.fallback_from,
                      "to": response.provider})
+
+            # Asked once and still no tool call on a play request: run play_song ourselves.
+            if (nudged and action_request and not response.has_tool_calls
+                    and not tool_call_log and "play_song" in self.registry):
+                query = forced_play_query(user_input)
+                if query:
+                    response.tool_calls = [{"id": "direct-1", "name": "play_song",
+                                            "args": {"query": query}}]
+                    yield TurnEvent("notice", "↻ no tool call from the model — running "
+                                    f"play_song for “{query}” directly",
+                                    {"kind": "forced", "tool": "play_song"})
+
+            # An action request answered in plain text: ask once more before showing it.
+            if (action_request and not nudged and not response.has_tool_calls
+                    and not tool_call_log):
+                nudged = True
+                messages.append(response.as_message())
+                messages.append(HumanMessage(content=_NUDGE))
+                yield TurnEvent("notice", "↻ no tool was called — asking the model to act",
+                                {"kind": "nudge"})
+                continue
 
             if response.content:
                 final_text = response.content
@@ -276,7 +326,7 @@ class Orchestrator:
                                 f" Use list_available_tools to see valid names.",
                         tool_call_id=call.get("id", ""), name=name or "unknown"))
                     continue
-                signature = f"{name}:{sorted((call.get('args') or {}).keys())}"
+                signature = f"{name}:{json.dumps(call.get('args') or {}, sort_keys=True, default=str)}"
                 seen_calls[signature] = seen_calls.get(signature, 0) + 1
                 if seen_calls[signature] > 3:
                     messages.append(ToolMessage(
@@ -291,6 +341,40 @@ class Orchestrator:
                                 "Answer with what you have.",
                         tool_call_id=call.get("id", ""), name=name))
                     continue
+                if breaker.blocked(name):
+                    messages.append(ToolMessage(content=breaker.message(name),
+                                                tool_call_id=call.get("id", ""), name=name))
+                    yield TurnEvent("notice", f"⛔ {name} blocked: it failed "
+                                    f"{breaker.failures.get(name, 0)} times this turn",
+                                    {"kind": "breaker", "tool": name})
+                    continue
+                tool_obj = self.registry.get(name)
+                decision = self.harness.decide(
+                    name, call.get("args") or {},
+                    category=getattr(tool_obj, "category", ""),
+                    dangerous=bool(getattr(tool_obj, "dangerous", False)))
+                if decision.action == "approve":
+                    request = ApprovalRequest(name, decision.risk, dict(call.get("args") or {}),
+                                              decision.reason)
+                    yield TurnEvent("notice", f"🔐 approval needed: {name} ({decision.risk})",
+                                    {"kind": "approval", "tool": name, "risk": decision.risk})
+                    approved = await asyncio.to_thread(self.harness.ask, request)
+                    self.harness.audit.record({"event": "approval", "tool": name,
+                                               "risk": decision.risk, "approved": approved,
+                                               "args": call.get("args") or {}})
+                    if not approved:
+                        decision.action = "deny"
+                        decision.reason = "the operator did not approve"
+                if decision.action == "deny":
+                    yield TurnEvent("error", f"⛔ {name} not run: {decision.reason}")
+                    self.harness.audit.record({"event": "denied", "tool": name,
+                                               "risk": decision.risk, "reason": decision.reason})
+                    messages.append(ToolMessage(
+                        content=f"Denied: {name} was not run ({decision.reason}). "
+                                "Do not retry it; tell the operator what is needed.",
+                        tool_call_id=call.get("id", ""), name=name))
+                    continue
+                decided[id(call)] = decision
                 calls.append(call)
 
             if not calls:
@@ -319,11 +403,31 @@ class Orchestrator:
                      "preview": preview})
                 content = tool_result.content if tool_result.ok else \
                     f"Error: {tool_result.error}"
+                verdict = None
+                if tool_result.ok and self.harness.verify_writes:
+                    verdict = verify_result(call["name"], call.get("args") or {})
+                    if verdict:
+                        content = f"{content}\n[{verdict}]"
+                failed_check = bool(verdict and verdict.startswith("VERIFICATION FAILED"))
+                breaker.note(call["name"], tool_result.ok and not failed_check,
+                             tool_result.error or verdict or "")
+                decision = decided.get(id(call))
+                self.harness.audit.record({
+                    "event": "tool", "turn": self.turn_count, "tool": call["name"],
+                    "risk": getattr(decision, "risk", ""), "decision": getattr(
+                        decision, "action", ""), "ok": tool_result.ok,
+                    "verified": verdict or "", "elapsed_ms": tool_result.elapsed_ms,
+                    "args": call.get("args") or {}})
                 messages.append(ToolMessage(
                     content=self.brain.context.shrink_tool_result(content),
                     tool_call_id=call.get("id", ""), name=call["name"]))
 
             result.tool_calls = tool_call_log
+            if direct_answer and tool_results:
+                first = tool_results[0]
+                final_text = first.content if first.ok else f"Error: {first.error}"
+                yield TurnEvent("text", final_text)
+                break
             # refresh the element map / DOM view hints when the browser changed page
             if any(call["name"].startswith(("browse_", "page_")) for call in calls):
                 bound_tools = self.brain.select_relevant_tools(
@@ -333,6 +437,21 @@ class Orchestrator:
 
         # 6. remember --------------------------------------------------------
         answer = final_text or "(no answer produced)"
+        if not final_text and tool_call_log:
+            # the loop ended (iteration limit, timeout) before the model wrote an answer
+            last = tool_call_log[-1]
+            answer = (f"I could not finish this: {len(tool_call_log)} tool call(s) ran, "
+                      f"the last was {last['name']} ({'ok' if last['ok'] else 'failed'}), "
+                      "and nothing was confirmed. Try a more specific request.")
+        if action_request and not any(entry["ok"] for entry in tool_call_log):
+            # the model may have *said* it did something; no tool confirmed it
+            if tool_call_log:
+                failed = ", ".join(sorted({entry["name"] for entry in tool_call_log}))
+                answer = f"The action did not succeed ({failed} failed), so nothing was done."
+                yield TurnEvent("error", f"⚠ action failed: {failed} — nothing was done")
+            else:
+                answer = _UNVERIFIED
+                yield TurnEvent("error", "⚠ no tool ran for this request — nothing was done")
         result.answer = answer
         result.latency_ms = int((time.perf_counter() - started) * 1000)
         try:
@@ -359,6 +478,14 @@ class Orchestrator:
             if event.type == "error" and not self.last_result:
                 log.warning(event.text)
         return self.last_result or TurnResult()
+
+    def _fallback_reason(self, provider: str) -> str:
+        """The latest recorded failure reason for ``provider``, for the fallback notice."""
+        for event in reversed(list(self.brain.api.events)):
+            if event.from_provider == provider:
+                detail = (event.detail or event.reason or "").strip()
+                return f" ({event.reason}: {detail[:160]})" if detail else f" ({event.reason})"
+        return ""
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _closest_tool(self, name: str) -> str:
@@ -395,6 +522,79 @@ class Orchestrator:
         lines = [self.brain.health_report(), "", self.memory.report(), "",
                  self.registry.summary()]
         return "\n".join(lines)
+
+
+# Requests that can only be satisfied by running a tool.  If the model answers
+# these with plain text and no tool ran, the turn must say so instead of claiming it.
+_ACTION_RE = re.compile(
+    r"\b(play|open|launch|visit|browse|click|send|email|kholo|chalao|bajao|"
+    r"remember|delete|download)\b", re.IGNORECASE)
+_NUDGE = ("This request needs an action and no tool has run yet. Call the matching "
+          "tool now, using one of the bound tool names. Do not describe steps and do "
+          "not say the action is done before a tool confirms it.")
+_UNVERIFIED = ("I did not run a tool for this, so nothing was actually done. "
+               "Please ask again, or name the action explicitly.")
+
+
+_PLAY_RE = re.compile(
+    r"\b(?:play|bajao|chalao|sunao)\s+(?:me\s+)?(?:a\s+|an\s+|the\s+|some\s+)?(?P<q>[^?!.\n]+?)"
+    r"(?:\s+(?:on|in|from)\s+(?:youtube\s+music|youtube|yt)\b.*)?\s*$", re.IGNORECASE)
+_NOT_A_SONG_RE = re.compile(r"^(my|that|it|this|again|something|anything)\b", re.IGNORECASE)
+
+
+def forced_play_query(user_input: str) -> str:
+    """The song to search for when the operator asked to play one, else ``""``.
+
+    "play pasuri on youtube" -> "pasuri"; "open yt and play a random song" ->
+    "random song".  "play my fav song" is left alone: it needs memory, not a search.
+    """
+    match = _PLAY_RE.search(user_input or "")
+    if not match:
+        return ""
+    query = re.sub(r"\s+(song|video|music|track)$", "", match.group("q").strip(),
+                   flags=re.IGNORECASE).strip()
+    if not query or _NOT_A_SONG_RE.match(query):
+        return ""
+    if query.lower() == "random":  # "play a random song": a random pick, not the word "random"
+        return "popular songs"
+    return query
+
+
+_SEARCH_RE = re.compile(
+    r"^\s*(?:please\s+|jarvis\s+)?(?:search(?:\s+for)?|google|look\s+up|lookup)\s+"
+    r"(?P<q>.+?)[\s.!?]*$", re.IGNORECASE)
+_NOT_A_WEB_SEARCH = re.compile(
+    r"^(my|the|in|a\s+file|files?|folder|memory|notes?|history|for\s+my)\b", re.IGNORECASE)
+
+
+def forced_search_query(user_input: str) -> str:
+    """The web search words for "search X" / "google X" / "look up X", else ``""``.
+
+    "search my notes for exams" is not a web search and returns ``""``.
+    """
+    match = _SEARCH_RE.match(user_input or "")
+    if not match:
+        return ""
+    query = match.group("q").strip()
+    if not query or _NOT_A_WEB_SEARCH.match(query):
+        return ""
+    return query
+
+
+def direct_route(user_input: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """A (tool, args) to run without asking the model, for clear play and search requests."""
+    song = forced_play_query(user_input)
+    if song:
+        return "play_song", {"query": song}
+    search = forced_search_query(user_input)
+    if search:
+        return "run_pipeline", {"name": "web_search", "query": search}
+    return None
+
+
+def needs_action(user_input: str) -> bool:
+    """True when the request can only be fulfilled by calling a tool."""
+    return bool(_ACTION_RE.search(user_input or ""))
 
 
 def _format_args(args: Optional[Mapping[str, Any]], *, limit: int = 120) -> str:

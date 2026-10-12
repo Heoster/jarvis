@@ -196,7 +196,7 @@ def message_from_dict(data: Mapping[str, Any]) -> Message:
 
 def to_openai_messages(messages: Sequence[Any]) -> List[Dict[str, Any]]:
     """Serialise to the OpenAI ``/chat/completions`` shape (shared by Groq,
-    Cerebras, OpenRouter, Ollama and the API server)."""
+    OpenRouter, Ollama and the API server)."""
     out: List[Dict[str, Any]] = []
     for raw in messages:
         msg = ensure_message(raw)
