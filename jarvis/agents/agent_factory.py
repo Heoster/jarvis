@@ -26,6 +26,10 @@ log = get_logger("agents.factory")
 
 __all__ = ["AgentFactory", "RouteDecision", "AGENT_TRIGGERS"]
 
+
+def _trigger_hit(trigger: str, lowered: str) -> bool:
+    return re.search(r"(?<![\w])" + re.escape(trigger) + r"(?![\w])", lowered) is not None
+
 AGENT_TRIGGERS: Dict[str, Tuple[str, ...]] = {
     "browser": ("open the website", "open chrome", "go to", "log in", "login",
                 "click on", "fill the form", "youtube", "browser", "website",
@@ -94,11 +98,10 @@ class AgentFactory:
 
         scores: Dict[str, float] = {}
         for agent, triggers in AGENT_TRIGGERS.items():
-            hits = sum(1 for trigger in triggers if trigger in lowered)
+            # whole-word matches only: "browser" must not fire on "browsers" or "display"
+            matched = [t for t in triggers if _trigger_hit(t, lowered)]
             # weight multi-word triggers higher — they are far more specific
-            weight = sum(2.0 if " " in trigger else 1.0 for trigger in triggers
-                         if trigger in lowered)
-            scores[agent] = hits + weight
+            scores[agent] = len(matched) + sum(2.0 if " " in t else 1.0 for t in matched)
 
         # structural hints
         if re.search(r"https?://\S+", lowered) and any(

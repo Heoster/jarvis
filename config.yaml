@@ -28,7 +28,13 @@ brain:
 llm:
   provider: "auto"                 # auto | ollama | groq | gemini | openrouter | hf
   model: "hermes3:3b"              # or qwen2.5:3b, llama3.2:3b, qwen2.5:7b
-  base_url: "http://localhost:11434"
+  base_url: "http://localhost:11434"   # legacy; prefer llm.ollama.base_url below
+  # Ollama (local brain + embeddings). URL precedence: OLLAMA_BASE_URL env →
+  # OLLAMA_HOST env → llm.ollama.base_url → llm.base_url → 127.0.0.1:11434.
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+    autostart: true          # run `ollama serve` in the background when it is not running
+    autostart_timeout: 20    # seconds to wait for it to answer after starting it
   temperature: 0.3
   max_tokens: 2048                 # max generation per turn
   context_window: 16384            # total budget we target

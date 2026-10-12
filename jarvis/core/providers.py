@@ -332,13 +332,13 @@ class BaseProvider:
 
     @property
     def base_url(self) -> str:
+        if self.name == "ollama":
+            from .ollama_runtime import resolve_base_url
+
+            return resolve_base_url(self.config)
         node = self.llm_cfg.get(self.name)
         if isinstance(node, Mapping) and node.get("base_url"):
             return str(node["base_url"]).rstrip("/")
-        if self.name == "ollama":
-            return str(os.environ.get("OLLAMA_BASE_URL")
-                       or self.llm_cfg.get("base_url")
-                       or self.spec.base_url).rstrip("/")
         return self.spec.base_url
 
     @property
@@ -476,9 +476,25 @@ class OllamaProvider(BaseProvider):
 
     spec = PROVIDER_SPECS["ollama"]
 
+    def ensure_running(self) -> None:
+        """Start ``ollama serve`` if it is down and allowed; raise if still down."""
+        from .ollama_runtime import autostart_enabled, autostart_timeout
+        from .ollama_runtime import ensure_running as _ensure
+
+        ok, detail = _ensure(self.base_url, autostart=autostart_enabled(self.config),
+                             timeout=autostart_timeout(self.config))
+        if not ok:
+            raise LLMError(detail, provider=self.name)
+
     def _probe_impl(self) -> str:
-        with _client(4.0) as client:
-            resp = client.get(f"{self.base_url}/api/tags")
+        import httpx
+
+        self.ensure_running()
+        try:
+            with _client(4.0) as client:
+                resp = client.get(f"{self.base_url}/api/tags")
+        except httpx.HTTPError as exc:
+            raise LLMError(f"not reachable at {self.base_url}: {exc}", provider=self.name) from exc
         if resp.status_code != 200:
             raise LLMError(f"ollama returned {resp.status_code}", provider=self.name)
         models = [m.get("name", "") for m in (resp.json().get("models") or [])]
@@ -509,8 +525,16 @@ class OllamaProvider(BaseProvider):
             payload["format"] = "json"
 
         start = time.perf_counter()
-        data = _post_json(f"{self.base_url}/api/chat", payload,
-                          {"Content-Type": "application/json"}, self.timeout, self.name)
+        try:
+            data = _post_json(f"{self.base_url}/api/chat", payload,
+                              {"Content-Type": "application/json"}, self.timeout, self.name)
+        except LLMError as exc:
+            if exc.status is not None:
+                raise
+            # connection refused / timeout: Ollama may have stopped since the probe
+            self.ensure_running()
+            data = _post_json(f"{self.base_url}/api/chat", payload,
+                              {"Content-Type": "application/json"}, self.timeout, self.name)
         latency = int((time.perf_counter() - start) * 1000)
 
         message = data.get("message") or {}

@@ -39,7 +39,7 @@ from ..utils.sanitizer import redact_secrets
 from .messages import AIMessage, ensure_messages
 from .providers import (
     PROVIDER_SPECS, BaseProvider, LLMError, LLMResponse, ProviderUnavailable,
-    ProviderSpec, build_provider,
+    ProviderSpec, build_provider, is_model_unavailable,
 )
 
 log = get_logger("api")
@@ -114,6 +114,9 @@ class ProviderHealth:
         self.total_calls: int = 0
         self.total_failures: int = 0
         self.last_error: str = ""
+        # Set when the provider reports its model is gone (404 / model_not_supported).
+        # Retrying cannot fix that, so the provider is skipped for the rest of the session.
+        self.disabled: bool = False
         self.backoff_until: float = 0.0
         self.provider: Optional[BaseProvider] = None
 
@@ -345,6 +348,12 @@ class APIManager:
                 response = provider.complete(msgs, **context)  # type: ignore[arg-type]
             except (LLMError, ProviderUnavailable) as exc:
                 self._mark_failure(state, str(exc))
+                if not isinstance(exc, ProviderUnavailable) and is_model_unavailable(exc):
+                    state.disabled = True
+                    state.status = "disabled"
+                    state.detail = f"model unavailable: {redact_secrets(str(exc))[:120]}"
+                    log.warning(f"{name} disabled for this session: {state.detail}")
+                    return None, exc
                 retryable = getattr(exc, "retryable", True)
                 if retryable and attempt <= self.max_retries and "429" in str(exc):
                     wait = min(8.0, self.backoff_base * attempt)
@@ -385,6 +394,8 @@ class APIManager:
             state.status = "unconfigured"
             state.detail = provider.availability_problem()
             return state.detail
+        if state.disabled:
+            return f"disabled this session: {state.detail}"
         if time.time() < state.backoff_until:
             wait = int(state.backoff_until - time.time())
             return f"cooling down {wait}s after: {state.last_error[:80]}"

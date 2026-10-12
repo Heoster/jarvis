@@ -45,6 +45,8 @@ DEFAULTS: Dict[str, Any] = {
     "llm": {
         "provider": "auto", "model": "hermes3:3b",
         "base_url": "http://localhost:11434", "temperature": 0.3,
+        "ollama": {"base_url": "http://127.0.0.1:11434", "autostart": True,
+                   "autostart_timeout": 20},
         "max_tokens": 2048, "context_window": 16384, "request_timeout": 120,
         "fallback_chain": ["ollama", "groq", "gemini", "openrouter", "hf"],
         "provider_models": {},

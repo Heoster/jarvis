@@ -143,6 +143,10 @@ class Orchestrator:
         """Load tools, bind them, warm up memory and probe providers."""
         if not self.registry.get_all_tools():
             self.registry.load_all_default_tools(self.config, verbose=verbose)
+        # start `ollama serve` in the background if it is not running (non-blocking)
+        from .ollama_runtime import start_in_background
+
+        start_in_background(self.config)
         self.brain.bind_tools(self.registry.get_all_tools())
         self.brain.attach_registry(self.registry)
         report = self.memory.bootstrap(ingest_knowledge=ingest_knowledge,

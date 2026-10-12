@@ -46,7 +46,7 @@ class OperatorProfile:
         "languages": ["JavaScript", "TypeScript", "Python"],
         "frontend": ["React", "Next.js", "Vite", "TailwindCSS", "GSAP"],
         "backend": ["Node.js", "Express", "Firebase", "MongoDB", "PostgreSQL"],
-        "ai": ["LangChain", "Ollama", "Groq", "Cerebras", "Gemini",
+        "ai": ["LangChain", "Ollama", "Groq", "Gemini",
                "Hugging Face", "OpenAI-compatible APIs"],
         "tools": ["Git", "Docker", "Vercel", "Linux", "VS Code"],
     })

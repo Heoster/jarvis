@@ -329,3 +329,43 @@ def test_is_model_unavailable_classifies_errors():
     assert not is_model_unavailable(LLMError("HTTP 400: bad json", status=400))
     assert not is_model_unavailable(LLMError("auth failed (401)", status=401))
     assert not is_model_unavailable(LLMError("rate limited (429)", status=429))
+
+
+# ── a model that is gone is skipped for the whole session ──────────────────
+def test_model_unavailable_disables_provider_for_the_session(config):
+    from jarvis.core.providers import LLMError
+
+    gone = LLMError("[groq] 404 model retired", provider="groq", status=404)
+    groq = FakeProvider("groq", error=gone)
+    gemini = FakeProvider("gemini")
+    manager = _manager(config, {"groq": groq, "gemini": gemini},
+                       chain=["groq", "gemini"])
+
+    assert manager.complete([HumanMessage(content="hi")]).provider == "gemini"
+    assert manager.states["groq"].status == "disabled"
+    assert manager.states["groq"].disabled is True
+
+    # the next turn must not call groq again, even after backoff would have expired
+    manager.states["groq"].backoff_until = 0.0
+    assert manager.complete([HumanMessage(content="again")]).provider == "gemini"
+    assert groq.calls == 1
+
+
+def test_transient_error_is_not_a_session_disable(config):
+    from jarvis.core.providers import LLMError
+
+    flaky = FakeProvider("groq", error=LLMError("[groq] timeout", provider="groq", status=None))
+    gemini = FakeProvider("gemini")
+    manager = _manager(config, {"groq": flaky, "gemini": gemini}, chain=["groq", "gemini"])
+    manager.complete([HumanMessage(content="hi")])
+    assert manager.states["groq"].disabled is False
+    assert manager.states["groq"].status == "down"
+
+
+# ── agent routing uses whole-word triggers ────────────────────────────────
+def test_browser_trigger_needs_a_whole_word():
+    from jarvis.agents.agent_factory import _trigger_hit
+
+    assert _trigger_hit("browser", "open the browser")
+    assert not _trigger_hit("browser", "my browsers are slow")
+    assert not _trigger_hit("go to", "algo tomorrow")

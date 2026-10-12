@@ -147,11 +147,13 @@ Storage is a single SQLite file (`memory_store/vectors.sqlite3`, WAL mode, float
   5. `jarvis api --verify` forces a live probe of every provider and prints latency + status, and `recent_fallbacks()` exposes the audit trail.
 - **Retired or unserved models are skipped inside a provider**: each provider has a candidate list (`llm.fallback_models`). A 404 (e.g. a retired OpenRouter `:free` slug, or Gemini 2.0 after its 2026-06-01 shutdown) or Hugging Face's `model_not_supported` moves to the next candidate model before the provider is given up on.
 - **`stub`** is a deterministic test/dev provider only (`llm.provider: stub`). It is not in the production chain.
+- **Ollama auto-start**: when JARVIS needs Ollama and it is not answering on a *local* address, it runs `ollama serve` in the background (log: `logs/ollama-serve.log`), waits up to `llm.ollama.autostart_timeout` seconds (default 20) and continues. The server is left running after JARVIS exits. Remote URLs are never started. If the binary is missing, or the server fails to start, the reason is shown and the next provider is used; a failed start is not retried for 60 s. Turn it off with `llm.ollama.autostart: false` or `JARVIS_OLLAMA_AUTOSTART=0`. Tests never start Ollama.
+- **Ollama URL** is resolved in this order: `OLLAMA_BASE_URL` → `OLLAMA_HOST` (Ollama's own variable, e.g. `0.0.0.0:11434`, which is read as `http://127.0.0.1:11434`) → `llm.ollama.base_url` → `llm.base_url` → `http://127.0.0.1:11434`. The embedder uses the same URL.
 
 ```
 $ python -m jarvis api --verify
   provider     status        latency   note
-  ollama       down          -         connection refused (start `ollama serve`)
+  ollama       down          -         connection refused (auto-start on; see above)
   groq         unconfigured  -         no API key (set GROQ_API_KEY)
   ...
   hf           healthy       412 ms   token ok for you; model Qwen/Qwen2.5-7B-Instruct
@@ -577,6 +579,10 @@ llm:
   provider: auto                 # auto = verified fallback chain
   fallback_chain: [ollama, groq, gemini, openrouter, hf]   # then an explicit error
   model: hermes3:3b              # small enough for a 4 GB laptop
+  ollama:
+    base_url: http://127.0.0.1:11434   # or set OLLAMA_BASE_URL / OLLAMA_HOST
+    autostart: true                    # run `ollama serve` if it is not running
+    autostart_timeout: 20              # seconds to wait after starting it
   cost_policy: free              # refuse anything that could bill money
 
 browser:
@@ -609,7 +615,7 @@ Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_T
 | cursor/typing does nothing on Linux | `apt-get install xdotool` (or `ydotool` on Wayland) |
 | `browser: needs Chrome` | `pip install playwright && playwright install chromium` |
 | OCR returns nothing | `apt-get install tesseract-ocr` + `pip install pytesseract` |
-| `no API key` for every LLM | `ollama serve && ollama pull hermes3:3b`, or set one free key |
+| `no API key` for every LLM | `ollama pull hermes3:3b` (JARVIS starts `ollama serve` itself), or set one free key |
 | search finds nothing | keyless DDG/Jina need outbound network; a key is faster |
 | first response is slow | first ollama call loads the model into RAM (normal) |
 
