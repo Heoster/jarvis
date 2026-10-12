@@ -36,6 +36,7 @@ JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, kee
 - [Obsidian & student mode](#obsidian--student-mode)
 - [The system prompt (what the model is actually told)](#the-system-prompt-what-the-model-is-actually-told)
 - [Play a song (URL injection, verification, memory)](#play-a-song-url-injection-verification-memory)
+- [Agentic harness (guardrails, verification, audit)](#agentic-harness-guardrails-verification-audit)
 - [Tools (123)](#tools-123)
 - [Agents](#agents)
 - [Architecture](#architecture)
@@ -571,6 +572,21 @@ The model can also call `run_pipeline(name, query)` (`name="web_search"`). Its g
 it when to use it. Routing does the job for clear search requests, and the model is the
 fallback for everything else.
 
+## Agentic harness (guardrails, verification, audit)
+
+JARVIS follows the harness model from the Databricks article [*What is an AI Agent Harness?*](https://www.databricks.com/blog/ai-harness): **agent = model + harness**. The model reasons. The harness supplies the tools, memory, workspace, guardrails, feedback loops, observability and context management. Every tool call goes through the harness:
+
+- **Guardrails and approvals.** Each call is classified as read, write, external, system or destructive. Reads run freely. Writes inside `workspace_roots` run in `ask` mode. Everything else asks the operator. With no terminal the answer is no. `deny_tools` always wins. `run_pipeline` is allowed by default, because a search request is the operator's own authorization.
+- **Verification.** File writes, appends, deletes, moves and copies are read back from disk. A mismatch is reported as `VERIFICATION FAILED` and counts as a failure.
+- **Loop breaker.** A tool that fails twice in one turn is blocked, and the model is told to stop retrying. An identical call is also stopped.
+- **Audit log.** Each decision and each call is written as a JSON line to `logs/audit.jsonl` (or `$JARVIS_LOG_DIR`), with secrets redacted.
+
+The loop is reason → act → observe → repeat, and a final answer that claims an action without a tool result is flagged.
+
+Known gaps: `run_bash` and `run_python` are approval-gated but not confined to the workspace, so a real sandbox is still future work. The mapping of the eight building blocks, the risk table and the audit format are in [`docs/HARNESS.md`](docs/HARNESS.md).
+
+---
+
 ## Tools (123)
 
 | Category | Count | Highlights |
@@ -683,6 +699,12 @@ llm:
     autostart: true                    # run `ollama serve` if it is not running
     autostart_timeout: 20              # seconds to wait after starting it
   cost_policy: free              # refuse anything that could bill money
+
+harness:
+  approval: ask                  # ask | strict | auto (see docs/HARNESS.md)
+  workspace_roots: ["."]         # writes inside these need no approval
+  max_failures_per_tool: 2       # loop breaker, per turn
+  audit_path: logs/audit.jsonl   # one JSON line per decision
 
 browser:
   engine_order: [playwright, selenium, cdp, screen]

@@ -19,6 +19,7 @@ looping 3B model cannot spin forever on a 2-core CPU.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from ..utils.sanitizer import truncate
 from ..tools.registry import ToolRegistry
 from .brain import Brain
 from .providers import LLMResponse
+from .harness import ApprovalRequest, FailureBreaker, Harness, verify_result
 from .messages import (
     AIMessage, HumanMessage, Message, SystemMessage, ToolMessage, ensure_messages,
     normalise_role, text_of,
@@ -108,6 +110,7 @@ class Orchestrator:
         from ..tools.pipelines import bind_registry as _bind_pipelines
 
         _bind_pipelines(self.registry)
+        self.harness = Harness(self.config)
         self.brain = brain or Brain(self.config)
         self.memory = memory or get_memory_manager(self.config)
         self.session_started = False
@@ -224,6 +227,8 @@ class Orchestrator:
 
         tool_call_log: List[Dict[str, Any]] = []
         seen_calls: Dict[str, int] = {}
+        breaker = FailureBreaker(self.harness.max_failures)
+        decided: Dict[int, Any] = {}
         deadline = time.monotonic() + self.turn_timeout
         final_text = ""
         action_request = needs_action(user_input) and bool(bound_tools)
@@ -321,7 +326,7 @@ class Orchestrator:
                                 f" Use list_available_tools to see valid names.",
                         tool_call_id=call.get("id", ""), name=name or "unknown"))
                     continue
-                signature = f"{name}:{sorted((call.get('args') or {}).keys())}"
+                signature = f"{name}:{json.dumps(call.get('args') or {}, sort_keys=True, default=str)}"
                 seen_calls[signature] = seen_calls.get(signature, 0) + 1
                 if seen_calls[signature] > 3:
                     messages.append(ToolMessage(
@@ -336,6 +341,40 @@ class Orchestrator:
                                 "Answer with what you have.",
                         tool_call_id=call.get("id", ""), name=name))
                     continue
+                if breaker.blocked(name):
+                    messages.append(ToolMessage(content=breaker.message(name),
+                                                tool_call_id=call.get("id", ""), name=name))
+                    yield TurnEvent("notice", f"⛔ {name} blocked: it failed "
+                                    f"{breaker.failures.get(name, 0)} times this turn",
+                                    {"kind": "breaker", "tool": name})
+                    continue
+                tool_obj = self.registry.get(name)
+                decision = self.harness.decide(
+                    name, call.get("args") or {},
+                    category=getattr(tool_obj, "category", ""),
+                    dangerous=bool(getattr(tool_obj, "dangerous", False)))
+                if decision.action == "approve":
+                    request = ApprovalRequest(name, decision.risk, dict(call.get("args") or {}),
+                                              decision.reason)
+                    yield TurnEvent("notice", f"🔐 approval needed: {name} ({decision.risk})",
+                                    {"kind": "approval", "tool": name, "risk": decision.risk})
+                    approved = await asyncio.to_thread(self.harness.ask, request)
+                    self.harness.audit.record({"event": "approval", "tool": name,
+                                               "risk": decision.risk, "approved": approved,
+                                               "args": call.get("args") or {}})
+                    if not approved:
+                        decision.action = "deny"
+                        decision.reason = "the operator did not approve"
+                if decision.action == "deny":
+                    yield TurnEvent("error", f"⛔ {name} not run: {decision.reason}")
+                    self.harness.audit.record({"event": "denied", "tool": name,
+                                               "risk": decision.risk, "reason": decision.reason})
+                    messages.append(ToolMessage(
+                        content=f"Denied: {name} was not run ({decision.reason}). "
+                                "Do not retry it; tell the operator what is needed.",
+                        tool_call_id=call.get("id", ""), name=name))
+                    continue
+                decided[id(call)] = decision
                 calls.append(call)
 
             if not calls:
@@ -364,6 +403,21 @@ class Orchestrator:
                      "preview": preview})
                 content = tool_result.content if tool_result.ok else \
                     f"Error: {tool_result.error}"
+                verdict = None
+                if tool_result.ok and self.harness.verify_writes:
+                    verdict = verify_result(call["name"], call.get("args") or {})
+                    if verdict:
+                        content = f"{content}\n[{verdict}]"
+                failed_check = bool(verdict and verdict.startswith("VERIFICATION FAILED"))
+                breaker.note(call["name"], tool_result.ok and not failed_check,
+                             tool_result.error or verdict or "")
+                decision = decided.get(id(call))
+                self.harness.audit.record({
+                    "event": "tool", "turn": self.turn_count, "tool": call["name"],
+                    "risk": getattr(decision, "risk", ""), "decision": getattr(
+                        decision, "action", ""), "ok": tool_result.ok,
+                    "verified": verdict or "", "elapsed_ms": tool_result.elapsed_ms,
+                    "args": call.get("args") or {}})
                 messages.append(ToolMessage(
                     content=self.brain.context.shrink_tool_result(content),
                     tool_call_id=call.get("id", ""), name=call["name"]))

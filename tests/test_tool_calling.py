@@ -113,6 +113,7 @@ def test_action_request_is_nudged_and_then_runs_the_tool(config):
                          "args": {"path": "old-backup"}}]},               # now acts
         {"content": "Deleted the old backup."},
     ], (True, "deleted old-backup"))
+    orchestrator.harness.approver = lambda request: True  # operator says yes
 
     events = _run(orchestrator, "delete the old backup folder")
     assert any(e.type == "notice" and "asking the model to act" in e.text for e in events)
