@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..utils.logger import get_logger
+from .text_tool_calls import extract_text_tool_calls
 from ..utils.sanitizer import redact_secrets
 from .messages import (
     AIMessage, ensure_messages, normalise_role, text_of, to_openai_messages,
@@ -550,8 +551,13 @@ class OllamaProvider(BaseProvider):
             calls.append({"id": raw.get("id") or f"call_{len(calls)}",
                           "name": fn.get("name", ""), "args": dict(args or {})})
 
+        content = message.get("content") or ""
+        if not calls:
+            # small models often write the call as text; recover it, but only for bound tools
+            calls, content = extract_text_tool_calls(content, tools)
+
         return LLMResponse(
-            content=message.get("content") or "",
+            content=content,
             tool_calls=calls, provider=self.name, model=self.model,
             prompt_tokens=int(data.get("prompt_eval_count", 0) or 0),
             completion_tokens=int(data.get("eval_count", 0) or 0),
@@ -623,9 +629,13 @@ class OpenAICompatProvider(BaseProvider):
             choice = (data.get("choices") or [{}])[0]
             message = choice.get("message") or {}
             usage = data.get("usage") or {}
+            content = text_of(message.get("content") or "")
+            calls = _extract_openai_tool_calls(message)
+            if not calls:
+                calls, content = extract_text_tool_calls(content, tools)
             return LLMResponse(
-                content=text_of(message.get("content") or ""),
-                tool_calls=_extract_openai_tool_calls(message),
+                content=content,
+                tool_calls=calls,
                 provider=self.name, model=str(data.get("model") or model),
                 prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(usage.get("completion_tokens", 0) or 0),
@@ -792,9 +802,13 @@ class HFProvider(BaseProvider):
             choice = (data.get("choices") or [{}])[0]
             message = choice.get("message") or {}
             usage = data.get("usage") or {}
+            content = text_of(message.get("content") or "")
+            calls = _extract_openai_tool_calls(message)
+            if not calls:
+                calls, content = extract_text_tool_calls(content, tools)
             return LLMResponse(
-                content=text_of(message.get("content") or ""),
-                tool_calls=_extract_openai_tool_calls(message),
+                content=content,
+                tool_calls=calls,
                 provider=self.name, model=str(data.get("model") or model),
                 prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(usage.get("completion_tokens", 0) or 0),

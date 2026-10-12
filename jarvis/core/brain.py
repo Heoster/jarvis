@@ -115,6 +115,12 @@ class ThinkingTrace:
         return " · ".join(bits)
 
 
+_SMALLTALK_RE = re.compile(
+    r"^(h+i+|hello|hey+|yo|namaste|namaskar|good (morning|afternoon|evening|night)|"
+    r"thanks?|thank you|thx|ok|okay|bye|ty|kaise ho|kya haal hai|how are you"
+    r"|how r u)[\s!.?]*$")
+
+
 class Brain:
     """LLM front-end: context-managed prompting + selective tool binding."""
 
@@ -183,6 +189,9 @@ class Brain:
             return pool
 
         lowered = (message or "").lower()
+        # small talk needs no tools; binding them only gives the model a list to recite
+        if _SMALLTALK_RE.match(lowered.strip()):
+            return []
         ranked_categories = self.categories_for(message)
         category_score = {name: len(ranked_categories) - index
                           for index, name in enumerate(ranked_categories)}

@@ -19,6 +19,7 @@ looping 3B model cannot spin forever on a 2-core CPU.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -221,6 +222,8 @@ class Orchestrator:
         seen_calls: Dict[str, int] = {}
         deadline = time.monotonic() + self.turn_timeout
         final_text = ""
+        action_request = needs_action(user_input) and bool(bound_tools)
+        nudged = False
 
         for iteration in range(1, self.max_iterations + 1):
             result.iterations = iteration
@@ -254,6 +257,16 @@ class Orchestrator:
                     f"{response.provider} (automatic fallback)",
                     {"kind": "fallback", "from": response.fallback_from,
                      "to": response.provider})
+
+            # An action request answered in plain text: ask once more before showing it.
+            if (action_request and not nudged and not response.has_tool_calls
+                    and not tool_call_log):
+                nudged = True
+                messages.append(response.as_message())
+                messages.append(HumanMessage(content=_NUDGE))
+                yield TurnEvent("notice", "↻ no tool was called — asking the model to act",
+                                {"kind": "nudge"})
+                continue
 
             if response.content:
                 final_text = response.content
@@ -337,6 +350,15 @@ class Orchestrator:
 
         # 6. remember --------------------------------------------------------
         answer = final_text or "(no answer produced)"
+        if action_request and not any(entry["ok"] for entry in tool_call_log):
+            # the model may have *said* it did something; no tool confirmed it
+            if tool_call_log:
+                failed = ", ".join(sorted({entry["name"] for entry in tool_call_log}))
+                answer = f"The action did not succeed ({failed} failed), so nothing was done."
+                yield TurnEvent("error", f"⚠ action failed: {failed} — nothing was done")
+            else:
+                answer = _UNVERIFIED
+                yield TurnEvent("error", "⚠ no tool ran for this request — nothing was done")
         result.answer = answer
         result.latency_ms = int((time.perf_counter() - started) * 1000)
         try:
@@ -399,6 +421,23 @@ class Orchestrator:
         lines = [self.brain.health_report(), "", self.memory.report(), "",
                  self.registry.summary()]
         return "\n".join(lines)
+
+
+# Requests that can only be satisfied by running a tool.  If the model answers
+# these with plain text and no tool ran, the turn must say so instead of claiming it.
+_ACTION_RE = re.compile(
+    r"\b(play|open|launch|visit|browse|click|send|email|kholo|chalao|bajao|"
+    r"remember|delete|download)\b", re.IGNORECASE)
+_NUDGE = ("This request needs an action and no tool has run yet. Call the matching "
+          "tool now, using one of the bound tool names. Do not describe steps and do "
+          "not say the action is done before a tool confirms it.")
+_UNVERIFIED = ("I did not run a tool for this, so nothing was actually done. "
+               "Please ask again, or name the action explicitly.")
+
+
+def needs_action(user_input: str) -> bool:
+    """True when the request can only be fulfilled by calling a tool."""
+    return bool(_ACTION_RE.search(user_input or ""))
 
 
 def _format_args(args: Optional[Mapping[str, Any]], *, limit: int = 120) -> str:

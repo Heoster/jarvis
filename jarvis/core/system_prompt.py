@@ -536,7 +536,7 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
 
     full_operator = [f"- {fact['key']}: {fact['value']}" for fact in prof.facts()]
     text = render(operator=full_operator, environment=env.lines(),
-                  playbooks="## PLAYBOOKS\n" + render_playbooks(),
+                  playbooks=render_playbooks(),
                   categories=category_lines)
     if len(text) <= max_chars:
         return text
@@ -551,7 +551,7 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
 
     # 2) compress operator + environment detail, keep the playbooks
     text = render(operator=_compact_operator(prof), environment=_compact_environment(env),
-                  playbooks="## PLAYBOOKS\n" + render_playbooks(),
+                  playbooks=render_playbooks(),
                   categories=category_lines)
     if len(text) <= max_chars:
         log.debug(f"system prompt trimmed to {len(text)} chars (compact facts)")
@@ -559,7 +559,7 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
 
     # 3) shorten the playbooks to their first step each
     text = render(operator=_compact_operator(prof), environment=_compact_environment(env),
-                  playbooks="## PLAYBOOKS\n" + render_playbooks(),
+                  playbooks=render_playbooks(),
                   categories=[line.split(":")[0] for line in category_lines],
                   index=render_playbook_index())
     if len(text) <= max_chars:
