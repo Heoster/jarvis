@@ -14,7 +14,7 @@ The contract the rest of the system relies on::
 
 Published free-tier numbers (verified 2025/2026, see ``PROVIDER_QUOTAS``):
 Tavily 1 000 search credits/month · Serper 2 500 one-time credits ·
-Firecrawl 500 credits one-time · Groq/Cerebras/OpenRouter/Gemini generous
+Firecrawl 500 credits one-time · Groq/OpenRouter/Gemini generous
 per-day token or request caps · Ollama, SearXNG, DuckDuckGo HTML, Jina Reader,
 trafilatura: unlimited (self-hosted or keyless).
 """
@@ -59,7 +59,6 @@ PROVIDER_QUOTAS: Dict[str, QuotaSpec] = {
     # ── LLM providers ───────────────────────────────────────────────────────
     "ollama":      QuotaSpec(0, "total", "token", "llm", "Local — unlimited"),
     "groq":        QuotaSpec(14_400, "day", "request", "llm", "Free tier ~14.4k req/day"),
-    "cerebras":    QuotaSpec(14_400, "day", "request", "llm", "Free tier, daily cap"),
     "openrouter":  QuotaSpec(50, "day", "request", "llm", "Free models: 50 req/day"),
     "gemini":      QuotaSpec(1_500, "day", "request", "llm", "Free tier ~1.5k req/day"),
     "hf":          QuotaSpec(1_000, "day", "request", "llm", "Serverless inference cap"),

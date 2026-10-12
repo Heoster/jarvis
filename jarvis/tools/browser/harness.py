@@ -844,13 +844,20 @@ class ScreenOnlyEngine(BaseEngine):
         return True, "cursor + OCR only (no DOM)"
 
     def start(self) -> None:
-        self.process = launch_chrome(
-            "", browser_type=self.cfg.get("browser_type", "chromium"),
-            headless=False, binary_path=self.cfg.get("binary_path", ""),
-            user_data_dir=self.cfg.get("user_data_dir", ""),
-            window_size=(int((self.cfg.get("window") or {}).get("width", 1440)),
-                         int((self.cfg.get("window") or {}).get("height", 900))),
-            stealth=bool(self.cfg.get("stealth", True)))
+        # Reuse the window this harness already opened instead of spawning a new
+        # Chrome every time the engine is (re)started.
+        existing = getattr(self.harness, "screen_engine_process", None)
+        if existing is not None and existing.is_running():
+            self.process = existing
+        else:
+            self.process = launch_chrome(
+                "", browser_type=self.cfg.get("browser_type", "chromium"),
+                headless=False, binary_path=self.cfg.get("binary_path", ""),
+                user_data_dir=self.cfg.get("user_data_dir", ""),
+                window_size=(int((self.cfg.get("window") or {}).get("width", 1440)),
+                             int((self.cfg.get("window") or {}).get("height", 900))),
+                stealth=bool(self.cfg.get("stealth", True)))
+            self.harness.screen_engine_process = self.process
         self.started = True
 
     async def goto(self, url: str, *, new_tab: bool = False) -> Dict[str, Any]:
@@ -866,6 +873,7 @@ class ScreenOnlyEngine(BaseEngine):
                 binary_path=self.cfg.get("binary_path", ""),
                 user_data_dir=self.cfg.get("user_data_dir", ""),
                 stealth=bool(self.cfg.get("stealth", True)))
+            self.harness.screen_engine_process = self.process
         self._last_url = url
         return {"url": url, "title": "", "note": "screen-only engine: page title "
                                                 "unavailable, use OCR to read"}
@@ -913,6 +921,8 @@ class BrowserHarness:
                                        / "data" / "screenshots"))
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self._last_box: Dict[str, Any] = {}
+        # the Chrome window the screen engine opened, reused across engine restarts
+        self.screen_engine_process: Optional[ChromeProcess] = None
 
     def _chain(self) -> List[str]:
         requested = str(self.cfg.get("engine", "auto")).lower()

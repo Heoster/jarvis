@@ -58,9 +58,12 @@ CATEGORY_GUIDE: Dict[str, str] = {
 
 PLAYBOOKS: Dict[str, List[str]] = {
     "browser": [
-        "Launch/attach Chrome with `browser_launch` (JARVIS can also start it from the "
-        "terminal: `scripts/chrome-harness.sh`).",
-        "Know where you are: `browser_status`, `page_tabs`.",
+        "Chrome is opened ONLY when the operator asks to open, visit, browse or play "
+        "something on the web. Never launch a browser for a question, a calculation, "
+        "a memory lookup or a file task, and never launch one just to 'get ready'.",
+        "Check first: `browser_status` / `page_tabs` — if a window is already open, "
+        "reuse it. Open a new one only with `browse_open` (or `browser_launch` if the "
+        "operator explicitly asks for a plain Chrome window).",
         "One job per tab: `browse_open(url, new_tab=true)`; switch with "
         "`page_tab_switch`, tidy up with `page_tab_close`.",
         "Prefer URL injection over typing (search URLs, ?q=, /search/… paths). Type "
@@ -116,9 +119,10 @@ PLAYBOOKS: Dict[str, List[str]] = {
 
 #: one line per playbook, used when the budget cannot fit the full text
 PLAYBOOK_INDEX: Dict[str, str] = {
-    "browser": "browser_launch → one job per tab (browse_open new_tab=true) → prefer "
-               "URL injection over typing → page_click/page_type → verify with "
-               "page_read/page_find/page_js → switch with page_tab_switch",
+    "browser": "only when asked to open/visit a site → browser_status (reuse an open "
+               "window) → browse_open (new_tab=true for a second page) → prefer URL "
+               "injection over typing → page_click/page_type → verify with "
+               "page_read/page_find/page_js",
     "media": "media_play(query=…) resolves favourites/history, injects the YouTube "
              "search URL, scores the results, verifies playback (paused/currentTime) "
              "and remembers the play; media_history(day=\"yesterday\") answers "

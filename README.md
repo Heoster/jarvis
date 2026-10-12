@@ -55,7 +55,7 @@ JARVIS is a *harness*, not a chatbot wrapper. It holds a persistent session, kee
 | Operator | **Heoster** — Harsh Saini, founder of CODEEX-AI, Khatauli (Muzaffarnagar), India |
 | Cost policy | **Free tiers only.** No paid API, no metered service, no credit card |
 | Vision model | **None, by design.** Screen understanding is OCR + DOM, never a VLM |
-| LLM chain | ollama → groq → cerebras → openrouter → gemini → hf → stub (auto-failover, verified) |
+| LLM chain | ollama → groq → gemini → openrouter → hf → error (auto-failover, verified) |
 | Browser chain | playwright → selenium → cdp (terminal-launched Chrome) → screen control |
 | Tools | **123**, in 10 categories, all schema-validated |
 | Memory | short-term window + episodic / semantic / procedural long-term tiers, hybrid recall |
@@ -135,7 +135,7 @@ Storage is a single SQLite file (`memory_store/vectors.sqlite3`, WAL mode, float
 
 `jarvis/core/api_manager.py` is the reason JARVIS keeps answering when a free tier dies.
 
-- **Chain**: `ollama → groq → cerebras → openrouter → gemini → hf → stub`, reorderable, always ending in a provider that cannot fail.
+- **Chain**: `ollama → groq → gemini → openrouter → hf`, then an explicit error. Reorderable via `llm.fallback_chain`. When every provider fails, the turn shows the error with each provider's reason — JARVIS never invents an answer. Ollama is only used if it is actually running and has the model pulled.
 - **Health checks**: each provider has a cheap `probe()` (model list / ping). Results are cached for 90 s with latency recorded.
 - **Backoff**: a provider that errors is marked `degraded`/`down` with exponential backoff (2 s → 120 s) instead of being hammered.
 - **Quota integration**: every call passes the free-tier quota manager (rpm / rpd / monthly credits per provider) *before* the request, so JARVIS never burns a free tier it needs later.
@@ -145,7 +145,8 @@ Storage is a single SQLite file (`memory_store/vectors.sqlite3`, WAL mode, float
   3. the answer records `provider`, `fallback_from` and `degraded: true`,
   4. a background **auto-heal** thread re-probes failed providers every 120 s and returns them to the chain once they recover,
   5. `jarvis api --verify` forces a live probe of every provider and prints latency + status, and `recent_fallbacks()` exposes the audit trail.
-- **Honest last resort**: the `stub` provider never pretends to reason. It performs the *obvious* tool call (arithmetic, time, URL, search), returns raw results, and tells Heoster how to get a real model — including the exact `ollama pull` command.
+- **Retired or unserved models are skipped inside a provider**: each provider has a candidate list (`llm.fallback_models`). A 404 (e.g. a retired OpenRouter `:free` slug, or Gemini 2.0 after its 2026-06-01 shutdown) or Hugging Face's `model_not_supported` moves to the next candidate model before the provider is given up on.
+- **`stub`** is a deterministic test/dev provider only (`llm.provider: stub`). It is not in the production chain.
 
 ```
 $ python -m jarvis api --verify
@@ -153,9 +154,9 @@ $ python -m jarvis api --verify
   ollama       down          -         connection refused (start `ollama serve`)
   groq         unconfigured  -         no API key (set GROQ_API_KEY)
   ...
-  stub         healthy       0 ms      unlimited
-  fallback chain : ollama → groq → cerebras → openrouter → gemini → hf → stub
-  would answer   : stub
+  hf           healthy       412 ms   token ok for you; model Qwen/Qwen2.5-7B-Instruct
+  fallback chain : ollama → groq → gemini → openrouter → hf
+  would answer   : hf
 ```
 
 ---
@@ -531,8 +532,8 @@ Routing is keyword-scored with structural signals (a URL + "open" → browser; "
         │ verified failover  │   │  categories       │
         └──────────┬─────────┘   └──────┬────────────┘
                    │                    │
-   ollama→groq→cerebras→openrouter→   browser·screen·search·crawl·
-   gemini→hf→stub                     code·file·utility·comms·memory·obsidian
+   ollama→groq→gemini→openrouter→hf   browser·screen·search·crawl·
+   → error                            code·file·utility·comms·memory·obsidian
                    │                    │
               ┌────▼────────────────────▼─────┐
               │  Smart Memory Manager         │
@@ -555,7 +556,6 @@ JARVIS tracks every provider's free allowance and refuses to exceed it (`data/qu
 | --- | --- | --- |
 | ollama | unlimited | local models — the primary free brain |
 | groq | 30 rpm / 14 400 rpd | very fast free tier, no card |
-| cerebras | 30 rpm / 14 400 rpd | free tier |
 | openrouter | 20 rpm / 50 rpd | free models (`:free` suffix) |
 | gemini | 15 rpm / 1 500 rpd | free tier |
 | huggingface | 10 rpm / 1 000 rpd | inference API |
@@ -575,7 +575,7 @@ JARVIS tracks every provider's free allowance and refuses to exceed it (`data/qu
 ```yaml
 llm:
   provider: auto                 # auto = verified fallback chain
-  fallback_chain: [ollama, groq, cerebras, openrouter, gemini, hf, stub]
+  fallback_chain: [ollama, groq, gemini, openrouter, hf]   # then an explicit error
   model: hermes3:3b              # small enough for a 4 GB laptop
   cost_policy: free              # refuse anything that could bill money
 
@@ -595,7 +595,7 @@ memory:
   long_term: {embedding_provider: auto, dedupe_threshold: 0.9}
 ```
 
-Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_TRASH_DIR`, `JARVIS_CHROME_PATH`, `JARVIS_PROFILE`, `JARVIS_API_HOST/PORT/TOKEN`, plus the provider keys (`GROQ_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `HUGGINGFACE_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`).
+Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_TRASH_DIR`, `JARVIS_CHROME_PATH`, `JARVIS_PROFILE`, `JARVIS_API_HOST/PORT/TOKEN`, plus the provider keys (`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `HUGGINGFACE_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, `JINA_API_KEY`).
 
 ---
 
