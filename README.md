@@ -472,6 +472,50 @@ whether it is playing, paused (autoplay blocked) or ended → press `k`, then
 channel and query in `data/media_history.json` (and mirror it to long-term memory).
 
 
+## Workflows (built-in skills)
+
+`skills/builtin_workflows.json` holds 20 ready-made workflows. Each one is a skill: a
+trigger (the words you would use), the tool steps in order, and a note per step. When a
+request matches, the steps are offered to the model as a plan, so it follows the recipe
+instead of guessing.
+
+| workflow | what it does | example request |
+|---|---|---|
+| `open_youtube_and_play` | plays the best YouTube match and reports the title | "play pasuri on youtube" |
+| `play_random_song` | picks a song from your play history, else a popular search | "open yt and play a random song" |
+| `open_website` | opens a site, reusing the open Chrome window | "open github" |
+| `search_web_and_answer` | searches, reads the best result, answers with sources | "latest news on solar panels" |
+| `read_page_and_summarise` | reads one URL and summarises it | "summarise this article: …" |
+| `fill_web_form` | fills fields and stops before submitting | "fill the signup form on …" |
+| `screenshot_and_describe_page` | captures the page and describes it | "what is on this page?" |
+| `take_note_to_file` | writes a note to a file | "save this as notes.md" |
+| `summarise_folder` | lists a folder and summarises the key files | "summarise my notes folder" |
+| `find_file_by_name` | locates a file by name | "where is my resume.pdf" |
+| `remember_fact` | stores a fact and reads it back to confirm | "remember my exam is on 14 Nov" |
+| `recall_past_information` | searches memory and play history | "what did I tell you about my exam?" |
+| `time_in_timezone` | current time, or a timezone conversion | "time in Tokyo now" |
+| `calculate_and_percentage` | exact maths and percentages | "what is 18% of 2450?" |
+| `flashcard_revision_session` | quizzes the due Obsidian flashcards | "quiz me on my flashcards" |
+| `make_exam_study_plan` | day-by-day revision plan to an exam date | "make a study plan for 14 Nov" |
+| `run_code_and_fix` | runs a Python snippet, fixes the error, retries (max 3) | "run this script and fix it" |
+| `clipboard_word_count` | word, character and line count of the clipboard | "count words in my clipboard" |
+| `check_system_status` | CPU, memory, disk and OS details | "system status" |
+| `draft_email_for_review` | drafts an email and never sends it without a yes | "draft an email to my teacher" |
+
+- **Edit or add** a workflow in the JSON file (or re-run `scripts/build_builtin_workflows.py`
+  after changing its list). Keep names unique and use only tools that exist: the test suite
+  checks every step against the live tool schemas.
+- **Learned skills** are saved in your skills folder. A learned skill with the same name
+  overrides a built-in one.
+- **Only successful turns are learned.** A turn where a tool failed, or no answer was
+  produced, is not stored as a skill.
+- **Judgement steps** (marked `(no tool)`) tell the model what to do with the results. They
+  are not run as tools.
+
+Tool use depends on the model. Small models (3B) often describe a step instead of calling
+the tool. For reliable workflows, use a 7B model with tool support, for example
+`qwen2.5:7b-instruct`, by setting `llm.model` and `llm.provider_models.ollama` in `config.yaml`.
+
 ## Tools (123)
 
 | Category | Count | Highlights |

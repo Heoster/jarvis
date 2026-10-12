@@ -251,9 +251,10 @@ class Orchestrator:
                                 self.brain.api.events[-3:]]
             result.context_line = self.brain.trace.context_line
             if response.fallback_from:
+                why = self._fallback_reason(response.fallback_from)
                 yield TurnEvent(
                     "notice",
-                    f"🔀 {response.fallback_from} failed → answered with "
+                    f"🔀 {response.fallback_from} failed{why} → answered with "
                     f"{response.provider} (automatic fallback)",
                     {"kind": "fallback", "from": response.fallback_from,
                      "to": response.provider})
@@ -350,6 +351,12 @@ class Orchestrator:
 
         # 6. remember --------------------------------------------------------
         answer = final_text or "(no answer produced)"
+        if not final_text and tool_call_log:
+            # the loop ended (iteration limit, timeout) before the model wrote an answer
+            last = tool_call_log[-1]
+            answer = (f"I could not finish this: {len(tool_call_log)} tool call(s) ran, "
+                      f"the last was {last['name']} ({'ok' if last['ok'] else 'failed'}), "
+                      "and nothing was confirmed. Try a more specific request.")
         if action_request and not any(entry["ok"] for entry in tool_call_log):
             # the model may have *said* it did something; no tool confirmed it
             if tool_call_log:
@@ -385,6 +392,14 @@ class Orchestrator:
             if event.type == "error" and not self.last_result:
                 log.warning(event.text)
         return self.last_result or TurnResult()
+
+    def _fallback_reason(self, provider: str) -> str:
+        """The latest recorded failure reason for ``provider``, for the fallback notice."""
+        for event in reversed(list(self.brain.api.events)):
+            if event.from_provider == provider:
+                detail = (event.detail or event.reason or "").strip()
+                return f" ({event.reason}: {detail[:160]})" if detail else f" ({event.reason})"
+        return ""
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _closest_tool(self, name: str) -> str:

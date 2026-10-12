@@ -166,3 +166,13 @@ def test_playbook_heading_is_not_duplicated(config, orchestrator_prompt=None):
 
     text = build_universal_prompt(config=config, tools=[])
     assert text.count("## PLAYBOOKS") == 1
+
+
+def test_loop_that_never_answers_says_what_happened(config):
+    tool_step = {"tool_calls": [{"id": "1", "name": "calculate", "args": {"expression": "1+1"}}]}
+    orchestrator, calls_run = _orchestrator(config, [tool_step] * 20, (True, "2"))
+    _run(orchestrator, "keep checking the numbers")
+    answer = orchestrator.last_result.answer
+    assert answer.startswith("I could not finish this"), answer
+    assert "calculate" in answer
+    orchestrator.shutdown()

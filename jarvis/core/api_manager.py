@@ -237,7 +237,8 @@ class APIManager:
         state.latency_ms = latency
         state.detail = detail
         if ok:
-            state.status = "healthy" if latency < 5_000 else "degraded"
+            if not state.disabled:  # a session-disabled provider stays disabled
+                state.status = "healthy" if latency < 5_000 else "degraded"
             state.consecutive_failures = 0
             state.backoff_until = 0.0
         else:
