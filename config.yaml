@@ -189,6 +189,16 @@ browser:
     click_settle_ms: 350
     move_duration_ms: 260
     jitter: true                   # human-ish cursor path, less bot-flagged
+  media:
+    history_file: "./data/media_history.json"   # what was played, and when
+    # media_play reads the results from the open page first, polling for this
+    # many seconds (YouTube hydrates its results after domcontentloaded). If the
+    # browser cannot see them at all, it falls back to these free readers:
+    #   http   → GET the results page, parse YouTube's own ytInitialData JSON
+    #   reader → r.jina.ai, the same page read as markdown
+    results_wait_seconds: 6
+    results_fallback: true
+    results_readers: ["http", "reader"]
 
 # ── Screen Control (FOCUS AREA #3) ──────────────────────────────────────────
 screen:
@@ -254,11 +264,6 @@ obsidian:
     inline_markers: false          # also write <!--SR:…--> for the SR plugin
   plugin:
     source_dir: "obsidian-plugin/jarvis"   # the JARVIS Obsidian plugin to install
-
-# ── Browser / media ─────────────────────────────────────────────────────────
-browser:
-  media:
-    history_file: "./data/media_history.json"   # what was played, and when
 
 # ── Sessions ────────────────────────────────────────────────────────────────
 sessions:

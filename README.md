@@ -499,6 +499,25 @@ character ceiling (default 12000).
 
 `media_play` does the same search through the browser and checks the player state. Use it when playback must be verified. If the model does not call a tool for a play request, JARVIS runs `play_song` itself, so "play X" never ends as a text-only reply.
 
+**Reading the results never depends on the browser engine.** YouTube hydrates its
+results *after* `domcontentloaded`, and a Playwright/Selenium failure used to end
+the run with "opened … but found no video results". Now `media_play` walks a
+reader chain and reports which one answered:
+
+| # | reader | how |
+|---|--------|-----|
+| 1 | `dom` | the open page, polled for `browser.media.results_wait_seconds` (6s) — the consent wall is clicked through if it appears |
+| 2 | `http` | a plain GET of the same results page, parsed out of YouTube's own `ytInitialData` JSON (title, channel, duration, views) — no browser, no key |
+| 3 | `reader` | `r.jina.ai`, the same page as markdown (what `play_song` uses) |
+| 4 | `snapshot` | the harness DOM snapshot, for engines that can read the page but not run JS |
+
+Only when all four fail does it say "no video results" — and it names what each
+reader said, so a dead network is never reported as an empty search. `play_song`
+got the same safety net: when Jina answers 429 (free-tier rate limit) it reads the
+page directly. Matching is also Romanisation-tolerant now ("tare" → "taare"),
+1-hour loops and 40-second clips are scored down, and the winning entry is
+reported with its score.
+
 ```bash
 python -m jarvis tool media_play '{"query":"kesariya arijit singh"}'
 python -m jarvis tool media_play '{}'                    # replay the last song
@@ -834,7 +853,8 @@ jarvis/
 ├── core/            orchestrator, brain, api manager, context manager, messages, providers
 ├── memory/          manager, embedder, vector store, tiers, profile, skills, sessions, knowledge
 ├── tools/
-│   ├── browser/     harness, DOM parser, CDP, terminal launcher, actions, screenshots
+│   ├── browser/     harness, DOM parser, CDP, terminal launcher, actions, media,
+│   │                youtube_results (reads a results page without the browser)
 │   ├── screen/      backends, mouse/keyboard, capture, OCR, windows, actions
 │   ├── search/      base (quota+http), tavily, serper, searxng, parallel
 │   ├── crawl/       reader chain, jina, firecrawl, local extractor
@@ -853,14 +873,14 @@ obsidian-plugin/      JARVIS for Obsidian (plain-JS community plugin, no build s
   └── prebuilt/       offline cache of community plugin bundles (see its README)
 knowledge/            operator profile, command reference, student workflow
 scripts/             setup, chrome harness, Xvfb, doctor, wrapper
-tests/               179 hermetic tests
+tests/               330 hermetic tests
 ```
 
 ---
 
 ## Status & limits
 
-- **Verified here**: 179/179 tests, CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
+- **Verified here**: 330 tests (24 of them new: the YouTube readers and the Playwright loop), CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
 - **Needs hardware to verify**: real Chrome engines, cursor movement and OCR — this sandbox has no browser binary, no `DISPLAY` and no `xdotool`. The harness reports *precisely* what is missing rather than failing silently, and `browser --verify --deep` performs the same check on your machine.
 - **Not implemented on purpose**: any paid API, any vision model, any telemetry. JARVIS sends data nowhere except the providers and readers you configure.
 

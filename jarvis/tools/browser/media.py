@@ -28,6 +28,7 @@ All of it free: no API key, no download, just the browser JARVIS already drives.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -37,6 +38,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from ...config import get as cfg_get
 from ...utils.logger import get_logger
 from ...utils.sanitizer import truncate
 from ..base import failure, tool
@@ -47,6 +49,18 @@ HISTORY_FILE = "media_history.json"
 YOUTUBE_SEARCH = "https://www.youtube.com/results?search_query={query}"
 YOUTUBE_HOME = "https://www.youtube.com/"
 MAX_HISTORY = 500
+
+#: How the results were read — reported back, so "it picked the wrong video"
+#: is always traceable to a reader rather than a guess.
+READER_LABELS = {"dom": "the open page (DOM)", "http": "the results page over HTTP "
+                 "(ytInitialData, no browser needed)",
+                 "reader": "Jina Reader (r.jina.ai)", "snapshot": "the DOM snapshot"}
+
+#: Polling the results page: YouTube hydrates ``ytd-video-renderer`` *after*
+#: ``domcontentloaded``, so one read taken straight after ``goto`` usually sees
+#: an empty page.  Both knobs are module-level so tests can shorten them.
+RESULTS_POLL_ATTEMPTS = 6
+RESULTS_POLL_DELAY = 0.7
 
 #: JS that turns a results (or watch) page into plain data — no vision needed
 RESULTS_JS = """(() => {
@@ -66,6 +80,29 @@ RESULTS_JS = """(() => {
     if (out.length >= 25) break;
   }
   return out;
+})()"""
+
+#: Is the page even a results page yet?  Used to decide whether waiting can
+#: still help (page loading) or is hopeless (consent wall, error page).
+RESULTS_READY_JS = """(() => {
+  const host = location.hostname || '';
+  return {
+    consent: host.includes('consent.youtube.com'),
+    renderers: document.querySelectorAll('ytd-video-renderer').length,
+    titles: document.querySelectorAll('a#video-title').length,
+    ready: document.readyState,
+    url: location.href
+  };
+})()"""
+
+#: Click through YouTube's "Before you continue" wall if we landed on it.
+CONSENT_JS = """(() => {
+  const accept = /^(accept all|i agree|agree|accept)/i;
+  const nodes = Array.from(document.querySelectorAll('button, a, .VfPpkd-LgbsSe'));
+  const hit = nodes.find(node => accept.test((node.textContent || node.value || '').trim()));
+  if (!hit) return {clicked: false};
+  hit.click();
+  return {clicked: true};
 })()"""
 
 PLAY_JS = """(() => {
@@ -291,6 +328,40 @@ def looks_like_url(text: str) -> bool:
     return bool(re.match(r"^https?://", (text or "").strip(), re.I))
 
 
+def fold_word(word: str) -> str:
+    """Transliteration-tolerant folding: ``taare`` → ``tare``, ``kyaaa`` → ``kya``.
+
+    Song names reach JARVIS as they were *said*, so Hindi/Urdu titles rarely
+    match letter for letter ("tare" vs "taare", "pasuri" vs "pasoori").
+    Collapsing repeated letters makes those match without any fuzzy library.
+    """
+    folded: List[str] = []
+    for char in str(word or "").lower():
+        if not folded or folded[-1] != char:
+            folded.append(char)
+    return "".join(folded)
+
+
+def duration_penalty(entry: Mapping[str, Any]) -> float:
+    """Loops, compilations and 40-second clips are almost never the real song."""
+    from .youtube_results import duration_seconds
+
+    seconds = duration_seconds(str(entry.get("duration") or ""))
+    title = str(entry.get("title") or "").lower()
+    penalty = 0.0
+    if seconds:
+        if seconds < 60:                                  # a clip, a teaser, a short
+            penalty -= 10
+        elif seconds < 120:
+            penalty -= 6
+        elif seconds > 900:                               # 15 min+: loop or compilation
+            penalty -= 22
+    if any(word in title for word in ("loop", "hour", "compilation", "full album",
+                                      "jukebox", "nonstop", "1 hour")):
+        penalty -= 15
+    return penalty
+
+
 def score_candidate(entry: Mapping[str, Any], query: str) -> float:
     """How well a result matches what was asked for (0-100)."""
     title = str(entry.get("title") or "")
@@ -300,6 +371,11 @@ def score_candidate(entry: Mapping[str, Any], query: str) -> float:
     if not want:
         return 0.0
     overlap = len(want & have) / len(want)
+    if overlap < 1.0:                       # retry with folded spellings
+        folded_want = {fold_word(word) for word in want}
+        folded_have = {fold_word(word) for word in have}
+        if folded_want:
+            overlap = max(overlap, len(folded_want & folded_have) / len(folded_want))
     score = overlap * 80.0
     lowered = title.lower()
     if "official" in lowered:
@@ -314,6 +390,7 @@ def score_candidate(entry: Mapping[str, Any], query: str) -> float:
     match = re.match(r"^(\d+):(\d{2})$", duration or "")
     if match and int(match.group(1)) < 2:                 # 1-2 minute clips are rarely songs
         score -= 8
+    score += duration_penalty(entry)
     return max(0.0, round(score, 2))
 
 
@@ -368,25 +445,150 @@ def _history(config: Optional[Mapping[str, Any]] = None) -> MediaHistory:
     return MediaHistory(config=config)
 
 
-async def _read_results(harness) -> List[Dict[str, Any]]:
-    """Parse the open results page with plain JS (no vision, no downloads)."""
-    try:
-        data = await harness.evaluate(RESULTS_JS)
-    except Exception as exc:
-        log.warning(f"media: results JS failed ({exc}); falling back to the DOM snapshot")
-        snapshot = await harness.snapshot_page()
-        rows: List[Dict[str, Any]] = []
-        for element in snapshot.elements:
-            href = getattr(element, "href", "") or ""
-            match = re.search(r"v=([\w-]{6,})", href)
-            if match:
-                rows.append({"title": (element.text or "")[:200], "id": match.group(1),
-                             "href": youtube_watch_url(match.group(1)), "channel": "",
-                             "duration": ""})
-        return rows[:25]
+def _coerce_entries(data: Any) -> List[Dict[str, Any]]:
+    """Normalise whatever the browser returned into result rows."""
     if isinstance(data, dict) and "result" in data:        # json-stringified reply
         data = data.get("result")
-    return [row for row in (data or []) if isinstance(row, dict)]
+    if isinstance(data, dict) and isinstance(data.get("entries"), list):
+        data = data.get("entries")
+    if not isinstance(data, list):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        video_id = str(row.get("id") or row.get("videoId") or "").strip()
+        if not video_id:
+            match = re.search(r"v=([\w-]{6,})", str(row.get("href") or ""))
+            video_id = match.group(1) if match else ""
+        if not video_id:
+            continue
+        rows.append({"title": str(row.get("title") or "")[:200], "id": video_id,
+                     "href": str(row.get("href") or youtube_watch_url(video_id)),
+                     "channel": str(row.get("channel") or "")[:80],
+                     "duration": str(row.get("duration") or "")[:16],
+                     "views": str(row.get("views") or "")[:40]})
+    return rows
+
+
+async def _dismiss_consent(harness) -> bool:
+    """Click YouTube's consent wall if the page is stuck on it."""
+    try:
+        result = await harness.evaluate(CONSENT_JS)
+    except Exception:
+        return False
+    if isinstance(result, dict) and result.get("clicked"):
+        log.info("media: dismissed the YouTube consent wall")
+        await asyncio.sleep(1.5)
+        return True
+    return False
+
+
+async def _page_ready(harness) -> Dict[str, Any]:
+    """What the page looks like right now (used to decide whether to wait)."""
+    try:
+        raw = await harness.evaluate(RESULTS_READY_JS)
+    except Exception:
+        return {}
+    if isinstance(raw, dict) and isinstance(raw.get("result"), dict):
+        return raw["result"]
+    return raw if isinstance(raw, dict) else {}
+
+
+async def _read_results(harness, *, query: str = "", wait: float = 6.0,
+                        allow_network: bool = True, limit: int = 25,
+                        readers: Sequence[str] = ("http", "reader")) -> Tuple[
+                            List[Dict[str, Any]], str, str]:
+    """Read the results page, and fall back to reading it *without* the browser.
+
+    Order of attempts:
+
+    1. **the DOM** — polled up to ``wait`` seconds, because YouTube renders its
+       results after ``domcontentloaded`` (one immediate read is the bug that
+       produced "opened … but found no video results");
+    2. **the consent wall** — clicked through once if the page is stuck on it;
+    3. **``ytInitialData`` over HTTP** — the results are server-rendered into
+       the HTML, so a plain GET reads them even when no engine can see the DOM
+       (this is what saves the run when Playwright and Selenium both degrade);
+    4. **Jina Reader** — same page, fetched as markdown;
+    5. **the DOM snapshot** — the old fallback, kept for engines that can read
+       the page but not run JS.
+
+    Returns ``(entries, reader, detail)``: ``reader`` is one of ``dom``,
+    ``http``, ``reader``, ``snapshot`` or ``""`` and ``detail`` explains why
+    every attempt failed, so the tool can report the real cause.
+    """
+    deadline = time.monotonic() + max(0.0, float(wait or 0.0))
+    attempts = max(1, int(RESULTS_POLL_ATTEMPTS))
+    delay = max(0.2, float(RESULTS_POLL_DELAY))
+    notes: List[str] = []
+
+    for attempt in range(1, attempts + 1):
+        try:
+            data = await harness.evaluate(RESULTS_JS)
+        except Exception as exc:                    # engine cannot run JS at all
+            notes.append(f"dom: {truncate(str(exc), 90)}")
+            data = None
+            if attempt == 1 and await _dismiss_consent(harness):
+                continue
+            break
+        entries = _coerce_entries(data)
+        if entries:
+            return entries[:limit], "dom", ""
+        if attempt == 1 and await _dismiss_consent(harness):
+            continue                                # a wall, not a slow page
+        if attempt >= 2:
+            # A finished page with no result nodes is an error page or a dead
+            # engine: waiting cannot help, so go straight to the network readers.
+            ready = await _page_ready(harness)
+            page_done = ready.get("ready") == "complete" and not ready.get("renderers")
+            if ready and page_done and not ready.get("consent"):
+                notes.append("dom: the page finished loading with no results on it")
+                break
+        if time.monotonic() >= deadline or attempt >= attempts:
+            notes.append(f"dom: no video results after {attempt} read(s)")
+            break
+        await asyncio.sleep(delay)
+
+    if not allow_network:
+        return [], "", " | ".join(notes) or "no results on the page"
+
+    from . import youtube_results
+
+    try:
+        entries, source, why = await asyncio.to_thread(
+            youtube_results.search, query, limit=limit, readers=readers)
+    except Exception as exc:                        # pragma: no cover - defensive
+        notes.append(f"network: {truncate(str(exc), 90)}")
+        return [], "", " | ".join(notes)
+    if entries:
+        return entries[:limit], source, ""
+    if why:
+        notes.append(why)
+
+    # last resort: engines that can read the page but not run JS
+    snapshot_entries = await _results_from_snapshot(harness)
+    if snapshot_entries:
+        return snapshot_entries[:limit], "snapshot", ""
+    return [], "", " | ".join(notes) or "nothing found"
+
+
+async def _results_from_snapshot(harness) -> List[Dict[str, Any]]:
+    """Pull ``watch?v=`` links out of the harness's DOM snapshot."""
+    try:
+        snapshot = await harness.snapshot_page()
+    except Exception as exc:
+        log.debug(f"media: DOM snapshot unavailable ({exc})")
+        return []
+    rows: List[Dict[str, Any]] = []
+    for element in getattr(snapshot, "elements", []) or []:
+        href = getattr(element, "href", "") or ""
+        match = re.search(r"v=([\w-]{6,})", href)
+        if match:
+            rows.append({"title": (getattr(element, "text", "") or "")[:200],
+                         "id": match.group(1), "href": youtube_watch_url(match.group(1)),
+                         "channel": "", "duration": "", "views": ""})
+    return rows[:25]
 
 
 async def _player_state(harness) -> Dict[str, Any]:
@@ -413,8 +615,11 @@ async def media_play(query: str = "", url: str = "", *, new_tab: bool = True,
     2. **URL injection** — open the YouTube results page for the query in a new
        tab instead of typing into the search box (typing is only needed when a
        site has no query parameter — use ``page_type`` + ``page_press`` then);
-    3. **read and score the results** in plain JS, so the log shows which entry
-       was chosen and why (title, channel, duration);
+    3. **read and score the results** — the open page first (polled, because
+       YouTube hydrates after load), then, if the page cannot be read at all,
+       the same page fetched over HTTP (``ytInitialData``) or through Jina
+       Reader, so a dead browser engine no longer means "no results"; the log
+       shows which reader won and why each entry scored what it did;
     4. **open the video and verify playback** through the player element
        (``paused``/``currentTime``/``duration``); if autoplay was blocked JARVIS
        presses ``k`` and checks again — the reply always states the real state;
@@ -460,10 +665,16 @@ async def media_play(query: str = "", url: str = "", *, new_tab: bool = True,
 
     engine = opened.get("engine") or "?"
     if search_page:
-        entries = await _read_results(harness)
+        wait_seconds = float(cfg_get(config, "browser.media.results_wait_seconds", 6.0))
+        fallback = bool(cfg_get(config, "browser.media.results_fallback", True))
+        readers = cfg_get(config, "browser.media.results_readers", ["http", "reader"])
+        entries, reader, detail = await _read_results(
+            harness, query=requested, wait=wait_seconds, allow_network=fallback,
+            readers=tuple(readers) if isinstance(readers, (list, tuple)) else ("http", "reader"))
         if not entries:
-            return failure(f"opened {target_url} on {engine} but found no video results "
-                           "— the page may still be loading; try again or pass a direct url")
+            return failure(f"no video results for “{requested}” — opened {target_url} on "
+                           f"{engine} and tried every reader ({detail or 'nothing found'}). "
+                           "Check the network, or pass a direct url=…")
         # pick=0 → the best match (scored); pick=n → that result, as listed
         if pick and 0 < pick < len(entries):
             chosen = entries[pick]
@@ -481,6 +692,8 @@ async def media_play(query: str = "", url: str = "", *, new_tab: bool = True,
                        + (f" · {chosen.get('duration')}" if chosen.get("duration") else "")
                        + f"  (match {score_candidate(chosen, requested):.0f}/100 of "
                          f"{len(entries)} results)")
+        if reader:
+            picked_line += f" · read from {READER_LABELS.get(reader, reader)}"
     else:
         chosen = {"title": "", "channel": "", "href": target_url}
         picked_line = f"🔗 direct url · {truncate(target_url, 90)}"
@@ -678,4 +891,4 @@ MEDIA_TOOLS = [media_play, media_history, media_favourite,
 
 __all__ = ["MEDIA_TOOLS", "MediaHistory", "Play", "build_search_url", "choose_candidate",
            "parse_player_state", "youtube_watch_url", "RESULTS_JS", "PLAYER_JS",
-           "score_candidate"]
+           "score_candidate", "fold_word", "duration_penalty"]

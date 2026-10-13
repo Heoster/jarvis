@@ -1,13 +1,15 @@
 """play_song: search URL → Jina read → first trusted video → browser.
 
-Jina and Chrome are stubbed, so these run offline.  They pin the exact order:
-the search URL is what gets read, and the first trusted watch link in rank
-order is what gets opened.
+Jina, the direct reader and Chrome are stubbed, so these run offline.  They pin
+the exact order: the search URL is what gets read, the first trusted watch link
+in rank order is what gets opened, and a rate-limited Jina falls through to
+reading the page directly instead of failing the request.
 """
 
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -69,6 +71,33 @@ def test_jina_failure_is_reported_not_hidden(monkeypatch):
     monkeypatch.setattr(mod, "jina_read", broken)
     result = asyncio.run(mod.play_song.func(query="anything"))
     assert "Jina could not fetch" in str(result) and "rate limit" in str(result)
+
+
+def test_direct_reader_takes_over_when_jina_is_rate_limited(monkeypatch):
+    """HTTP 429 from Jina (free tier) must not end the request: read the page."""
+    from jarvis.tools.browser import youtube_results as yt
+    from jarvis.tools.crawl.jina_reader import CrawlError
+
+    def rate_limited(url, max_chars=0):
+        raise CrawlError("jina reader rate limit hit (free tier: 20 req/min)")
+
+    html = (Path(__file__).resolve().parent / "fixtures"
+            / "youtube_search.html").read_text(encoding="utf-8")
+    monkeypatch.setattr(mod, "jina_read", rate_limited)
+    monkeypatch.setattr(yt, "http_get", lambda url, **kwargs: html)
+
+    opened = []
+
+    async def fake_browse(url, new_tab=False, read_page=True):
+        opened.append(url)
+        return f"✅ Opened **video**\nURL: {url}"
+
+    monkeypatch.setattr(mod.browse_open, "func", fake_browse)
+
+    result = asyncio.run(mod.play_song.func(query="tare farak"))
+    assert opened == ["https://www.youtube.com/watch?v=U0EI7XFkkV4"]
+    assert "Farak - Taare | Official Music Video" in result
+    assert "results data" in result                 # it says how it found it
 
 
 def test_no_trusted_result_is_a_clear_failure(monkeypatch):
