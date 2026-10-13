@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "obsidian-admonition",
+  "name": "Admonition",
+  "version": "12.0.10",
+  "source": "github-release",
+  "repo": "javalent/admonitions",
+  "tag": "12.0.10",
+  "urls": {
+    "manifest.json": "https://github.com/ebullient/obsidian-admonition/releases/download/12.0.10/manifest.json",
+    "main.js": "https://github.com/ebullient/obsidian-admonition/releases/download/12.0.10/main.js",
+    "styles.css": "https://github.com/ebullient/obsidian-admonition/releases/download/12.0.10/styles.css"
+  },
+  "sha256": {
+    "main.js": "c2b4ecdb50e5934031dad216f169143f8c471fca39631a2ee10fc95870959519",
+    "manifest.json": "3ca4804df5d940ad04879746a020cf161b89bdd4fe1da64c16137840450d04f6",
+    "styles.css": "09d3328199aba165fc10ac419747bb092ce777867f4431db0d6c7f1c9da8258c"
+  },
+  "fetched_at": "2026-10-12T13:51:49+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

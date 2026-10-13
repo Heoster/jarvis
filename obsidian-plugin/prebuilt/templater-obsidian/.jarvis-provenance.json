@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "templater-obsidian",
+  "name": "Templater",
+  "version": "2.26.0",
+  "source": "github-release",
+  "repo": "SilentVoid13/Templater",
+  "tag": "2.26.0",
+  "urls": {
+    "manifest.json": "https://github.com/SilentVoid13/Templater/releases/download/2.26.0/manifest.json",
+    "main.js": "https://github.com/SilentVoid13/Templater/releases/download/2.26.0/main.js",
+    "styles.css": "https://github.com/SilentVoid13/Templater/releases/download/2.26.0/styles.css"
+  },
+  "sha256": {
+    "main.js": "0acd45cfdb3a7337e2bef511699bc1f819dc64645ad3480df33579d42d2dcbaa",
+    "manifest.json": "91c9fa8510082fffa0b3d022aac4986e3b392295b1126e847ead7ed7289169b8",
+    "styles.css": "67a6dd2d1d6dedca1287c334ca884ec4196433f71ca47388a0bd3eac14cf8b5f"
+  },
+  "fetched_at": "2026-10-12T13:51:24+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

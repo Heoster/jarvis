@@ -16,6 +16,7 @@ Two engines:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -50,10 +51,43 @@ class ScreenWord:
 
 
 def _tesseract_path() -> Optional[str]:
+    """Locate the tesseract binary.
+
+    Priority order:
+    1. ``screen.tesseract_cmd`` in config.yaml (explicit operator setting)
+    2. ``JARVIS_TESSERACT_PATH`` / ``TESSERACT_CMD`` env vars
+    3. ``tesseract`` on PATH (shutil.which)
+    4. Known install locations (Windows Program Files, Linux/macOS standard paths)
+    """
+    # 1. config
+    try:
+        from ...config import load_config
+
+        cfg_cmd = ((load_config().get("screen") or {}).get("tesseract_cmd") or "")
+        if cfg_cmd and Path(cfg_cmd).exists():
+            return str(cfg_cmd)
+    except Exception:
+        pass
+
+    # 2. env vars
+    for env_var in ("JARVIS_TESSERACT_PATH", "TESSERACT_CMD"):
+        env_val = os.environ.get(env_var, "")
+        if env_val and Path(env_val).exists():
+            return env_val
+
+    # 3. PATH
     if shutil.which("tesseract"):
         return "tesseract"
-    for candidate in ("/usr/bin/tesseract", "/usr/local/bin/tesseract",
-                      r"C:\Program Files\Tesseract-OCR\tesseract.exe"):
+
+    # 4. well-known install locations
+    for candidate in (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",    # macOS Apple Silicon
+        "/opt/local/bin/tesseract",       # macOS MacPorts
+    ):
         if Path(candidate).exists():
             return candidate
     return None
@@ -239,7 +273,7 @@ def _fuzzy(needle: str, haystack: str, *, threshold: float = 0.8) -> bool:
 
 # ── tools ───────────────────────────────────────────────────────────────────
 @tool(category="screen", timeout=120)
-def read_screen_text(monitor: int = 1, region: str = "", ocr_engine: str = "auto") -> str:
+def read_screen_text(monitor: int = 1, region: str = "", ocr_engine: str = "") -> str:
     """Read the text currently visible on screen using OCR (no vision model).
 
     Use this to find out what an app or page is showing when the DOM is not
@@ -248,15 +282,22 @@ def read_screen_text(monitor: int = 1, region: str = "", ocr_engine: str = "auto
     Args:
         monitor: Which monitor to read (1 = primary)
         region: Optional "x,y,width,height" crop, in screen pixels
-        ocr_engine: "auto", "tesseract" or "easyocr"
+        ocr_engine: "auto", "tesseract" or "easyocr" (default: from config)
     """
+    from ...config import load_config
     from .screen_capture import capture_desktop
 
+    cfg = load_config()
+    screen_cfg = cfg.get("screen") or {}
+    if not screen_cfg.get("ocr_enabled", True):
+        return failure("OCR is disabled in config (screen.ocr_enabled: false). "
+                       "Set it to true to enable `read_screen_text`.")
+    engine = ocr_engine or str(screen_cfg.get("ocr_engine") or "auto")
     try:
         path = capture_desktop(monitor=monitor)
     except Exception as exc:
         return failure(f"Cannot capture the screen: {exc}")
-    text = read_image_text(path, region=region or None, engine=ocr_engine)
+    text = read_image_text(path, region=region or None, engine=engine)
     if not text:
         return failure(f"No text detected on screen (OCR found nothing). Screenshot "
                        f"saved at {path} — if the screen does show text, install "

@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "obsidian-excalidraw-plugin",
+  "name": "Excalidraw",
+  "version": "2.28.1",
+  "source": "github-release",
+  "repo": "zsviczian/obsidian-excalidraw-plugin",
+  "tag": "2.28.1",
+  "urls": {
+    "manifest.json": "https://github.com/zsviczian/obsidian-excalidraw-plugin/releases/download/2.28.1/manifest.json",
+    "main.js": "https://github.com/zsviczian/obsidian-excalidraw-plugin/releases/download/2.28.1/main.js",
+    "styles.css": "https://github.com/zsviczian/obsidian-excalidraw-plugin/releases/download/2.28.1/styles.css"
+  },
+  "sha256": {
+    "main.js": "4cd3e55a4e6af8ad9835d77eaefb7cfeaaa0bb415d78f6ea9f8ad42970f9285f",
+    "manifest.json": "15dd0e8af2427f81ea401bf21639cef67e4507e3fc2d981213103dd1accf0522",
+    "styles.css": "173e9c161a01c53b3c173344e023de4d327fd0658e476961b46b0e6a93117ded"
+  },
+  "fetched_at": "2026-10-12T13:51:41+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

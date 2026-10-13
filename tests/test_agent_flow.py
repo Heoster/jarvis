@@ -103,7 +103,8 @@ def test_tool_selection_is_relevant_and_small(config):
 
     browser_pick = {tool.name for tool in brain.select_relevant_tools(
         "open youtube and search for lofi beats")}
-    assert len(browser_pick) <= 10
+    # max_tools is 14 plus a few always-on tools — verify a sensible upper bound
+    assert len(browser_pick) <= 20
     assert browser_pick & {"browse_open", "page_type", "search_web"}
 
     math_pick = {tool.name for tool in brain.select_relevant_tools(
@@ -201,6 +202,33 @@ def test_cli_tools_lists_a_category():
     result = CliRunner().invoke(main, ["tools", "screen"])
     assert result.exit_code == 0
     assert "cursor_click" in result.output
+
+
+def test_cli_chat_displays_tool_count(monkeypatch):
+    from click.testing import CliRunner
+
+    import jarvis.interfaces.cli as cli
+
+    class FakeOrchestrator:
+        def status(self):
+            return {
+                "tools": {"tools": 123},
+                "brain": {"provider_chain": ["stub"]},
+                "memory": {"long_term": 45},
+            }
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    monkeypatch.setattr(cli, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli, "_build_orchestrator",
+                        lambda _config, verbose=False: FakeOrchestrator())
+
+    result = CliRunner().invoke(cli.main, ["chat"], input="")
+
+    assert result.exit_code == 0, result.exception
+    assert "tools 123" in result.output
 
 
 def test_study_agent_routes_and_has_vault_tools(config):

@@ -43,18 +43,18 @@ __all__ = ["EnvironmentInfo", "build_universal_prompt", "collect_environment",
 
 PROMPT_STYLES = ("universal", "persona")
 
-#: how each tool category is meant to be used — short, because the model is small
+#: one line per category shown in the system prompt — covers ALL 10 registered categories
 CATEGORY_GUIDE: Dict[str, str] = {
-    "browser": "drive the real Chrome window: open, click, type, read, switch tabs",
-    "screen": "control the operator's desktop: cursor, keys, windows, OCR reading",
-    "search": "look things up on the web (free providers, no key needed)",
-    "crawl": "read one URL or many as clean text (free path before the browser)",
-    "code": "run and analyse code, inspect projects",
-    "file": "read, write, move, search files and folders",
-    "communication": "email drafts, notifications, speech, webhooks",
-    "memory": "store and recall facts about the operator and past sessions",
-    "obsidian": "the study vault: notes, flashcards, revision, exam plans",
-    "utility": "time, maths, JSON, clipboard, images, tool discovery",
+    "browser": "drive the real Chrome window: open, click, type, read, switch tabs, play media",
+    "screen": "control the operator's desktop: cursor, keys, OCR read, window focus, click by text",
+    "search": "look things up on the web (free providers: Tavily, Serper, DDG, SearXNG — no key needed)",
+    "crawl": "read one URL or many as clean text via Jina/local/Firecrawl (cheapest web-read path)",
+    "code": "run Python/Bash, analyse code, outline files, find symbols, check PATH tools",
+    "file": "read, write, append, move, copy, delete, search files and folders on disk",
+    "communication": "email drafts & sending, HTTP requests, webhooks, desktop notifications, TTS",
+    "memory": "store and recall facts, preferences, decisions and session history across restarts",
+    "obsidian": "the study vault: notes, flashcards, spaced-repetition, study plans, revision queue",
+    "utility": "datetime, maths, JSON, text stats, clipboard, image ops, tool discovery",
 }
 
 PLAYBOOKS: Dict[str, List[str]] = {
@@ -91,50 +91,93 @@ PLAYBOOKS: Dict[str, List[str]] = {
     ],
     "screen": [
         "JARVIS has no vision model: it reads screens as text (DOM + OCR).",
-        "Order of preference: browser DOM → OCR text (`screen_read_text`) → cursor "
+        "Order of preference: browser DOM -> OCR text (`read_screen_text`) -> cursor "
         "coordinates (`cursor_move`, `cursor_click`).",
         "Locate by text (`screen_click_text`) rather than guessing pixels; confirm "
-        "with `screen_read_text` after the action.",
+        "with `read_screen_text` after the action.",
+        "For native app windows: `screen_list_windows` -> `screen_focus_window` -> "
+        "then `keyboard_type` / `keyboard_press`.",
+        "When the DOM is unavailable (PDF, canvas, game): `screenshot_and_read` "
+        "takes a screenshot and OCRs it in one call.",
     ],
     "memory": [
         "Before asking the operator to repeat anything: `recall(query)` and "
         "`search_memory(query)`.",
-        "Store durable facts the moment they are stated (“remember…”, preferences, "
-        "deadlines, names) with `remember(fact=…)`.",
-        "Session transcripts are searchable — “what did we do last time” is answered "
+        "Store durable facts the moment they are stated (preferences, deadlines, "
+        "names) with `remember(fact=...)`.",
+        "Session transcripts are searchable -- 'what did we do last time' is answered "
         "by `search_memory`, not by guessing.",
+        "`memory_stats` shows totals; `forget(id)` removes a specific entry (get ids "
+        "from `recall`).",
     ],
     "study": [
-        "Vault questions (notes, cards, exams) → the obsidian tools; the vault is "
+        "Vault questions (notes, cards, exams) -> the obsidian tools; the vault is "
         "plain markdown, so they work with Obsidian closed.",
-        "“What should I study?” → `obsidian_study_brief`; “what do I keep "
-        "forgetting?” → `obsidian_weak_topics`; log a review with "
+        "'What should I study?' -> `obsidian_study_brief`; 'what do I keep "
+        "forgetting?' -> `obsidian_weak_topics`; log a review with "
         "`obsidian_flashcards_review`.",
+        "Add flashcards: `obsidian_flashcards_add`; see what is due: "
+        "`obsidian_flashcards_due`; build the vault scaffold: `obsidian_study_kit`.",
+        "Upcoming exams: `obsidian_exams`; day-by-day plan: "
+        "`obsidian_study_plan(subject=..., exam_date=...)`.",
+        "Daily note / tasks: `obsidian_daily_note`, `obsidian_tasks`.",
     ],
     "research": [
         "`search_web` first, then `read_url` on the two or three best links, then "
         "answer with the sources named. Cite what was actually read.",
         "Long reads: `read_url` (free Jina/HTTP path) before opening a browser tab.",
+        "Multiple pages at once: `read_many(urls=...)`. News: `search_news(query=...)`.",
+        "JS-heavy pages: `browse_open` then `page_read`, or `firecrawl_scrape`.",
+    ],
+    "code": [
+        "Run Python snippets: `run_python(code=...)` -- always check result before reporting.",
+        "Run shell commands: `run_bash(command=...)`. Destructive commands require "
+        "`confirm_destructive=true`.",
+        "Understand a codebase: `code_project_summary` for layout, "
+        "`code_outline(path=...)` for structure, `code_find_symbol` to locate a function.",
+        "Check CLI tools: `which_command(name=...)`. OS/hardware facts: `system_info`.",
+    ],
+    "file": [
+        "Read: `read_file(path=...)`. Write/overwrite: `write_file`. Append: `append_file`.",
+        "Navigate: `list_directory`. Find files: `find_files_by_name(name=..., root=...)`.",
+        "Search content: `file_search(pattern=..., root=...)`. "
+        "Move / copy / delete: `move_path`, `copy_path`, `delete_path` (trash by default).",
+        "Metadata and disk use: `file_info(path=...)`, `directory_size(directory=...)`.",
+    ],
+    "communication": [
+        "Draft first, then send: `draft_email` -> show operator -> `send_email(confirm=true)`. "
+        "Never send without explicit approval.",
+        "Desktop pop-up: `send_notification(title=..., message=...)` -- instant, no network.",
+        "Say aloud: `speak(text=...)` (espeak-ng / Windows TTS / macOS say).",
+        "Call any web API: `http_request(url=..., method=..., json=...)`. "
+        "POST to Discord/Slack/ntfy: `send_webhook(url=..., message=...)`.",
+        "Download a file to disk: `download_file(url=..., dest=...)`.",
     ],
 }
 
-#: one line per playbook, used when the budget cannot fit the full text
 PLAYBOOK_INDEX: Dict[str, str] = {
-    "browser": "only when asked to open/visit a site → browser_status (reuse an open "
-               "window) → browse_open (new_tab=true for a second page) → prefer URL "
-               "injection over typing → page_click/page_type → verify with "
-               "page_read/page_find/page_js",
-    "media": "media_play(query=…) resolves favourites/history, injects the YouTube "
-             "search URL, scores the results, verifies playback (paused/currentTime) "
-             "and remembers the play; media_history(day=\"yesterday\") answers "
-             "\"what did I play yesterday?\"",
-    "screen": "no vision model: OCR text + real cursor (screen_click_text → "
-              "screen_read_text to confirm)",
+    "browser": "browser_launch -> one job per tab (browse_open new_tab=true) -> prefer "
+               "URL injection over typing -> page_click/page_type -> verify with "
+               "page_read/page_find/page_js -> switch with page_tab_switch",
+    "media": "media_play(query=...) resolves favourites/history, opens best YouTube "
+             "match in a new tab, verifies playback (paused/currentTime/duration) "
+             "and remembers the play; media_history(day=...) for history",
+    "screen": "no vision model: read_screen_text (OCR) + real cursor; "
+              "screen_click_text -> read_screen_text to confirm; "
+              "screen_list_windows -> screen_focus_window for native apps; "
+              "screenshot_and_read for PDF/canvas pages",
     "memory": "recall/search_memory before asking; remember stated preferences, "
-              "deadlines and decisions",
+              "deadlines and decisions; memory_stats for totals; forget(id) to remove",
     "study": "obsidian tools for notes, flashcards, revision (obsidian_study_brief, "
-             "obsidian_weak_topics)",
-    "research": "search_web → read_url the best links → answer citing them",
+             "obsidian_weak_topics, obsidian_flashcards_due, obsidian_exams)",
+    "research": "search_web -> read_url the best links -> answer citing them; "
+                "search_news for news; read_many for bulk; firecrawl_scrape for JS pages",
+    "code": "run_python / run_bash -> check result; code_project_summary -> "
+            "code_outline -> code_find_symbol; which_command; system_info",
+    "file": "read_file / write_file / append_file; list_directory; find_files_by_name; "
+            "file_search; move_path / copy_path / delete_path (trash); file_info",
+    "communication": "draft_email -> send_email(confirm=true); send_notification; "
+                     "speak; http_request; send_webhook; download_file",
 }
 
 
@@ -316,15 +359,23 @@ def collect_environment(config: Optional[Mapping[str, Any]] = None, *,
                                                               True) else ""
         except Exception:
             env.vault = ""
-        for command, label in (("tesseract", "tesseract OCR"),
-                               ("espeak-ng", "espeak-ng TTS"),
+        for command, label in (("espeak-ng", "espeak-ng TTS"),
                                ("say", "macOS say"),
                                ("ffmpeg", "ffmpeg")):
             if shutil.which(command):
-                if label.endswith("OCR"):
-                    env.voice = label if not env.voice else env.voice
-                else:
-                    env.tts = f"{env.tts}, {label}".strip(", ") if env.tts else label
+                env.tts = f"{env.tts}, {label}".strip(", ") if env.tts else label
+        # OCR: use the same discovery logic as the ocr_reader module so a
+        # binary that is not on PATH (e.g. Windows Program Files) is still found.
+        try:
+            from ..tools.screen.ocr_reader import ocr_available
+            ocr_ok, ocr_detail = ocr_available()
+            if ocr_ok:
+                env.notes.append(f"OCR: {ocr_detail} (screen text reading active)")
+            else:
+                env.notes.append(f"OCR unavailable: {ocr_detail}")
+        except Exception:
+            if shutil.which("tesseract"):
+                env.notes.append("OCR: tesseract on PATH")
         if not cfg_get(config, "browser.headless", False) and env.display == "no":
             env.notes.append("No display: the browser runs headless and screen tools "
                              "cannot move a real cursor here (use Xvfb).")

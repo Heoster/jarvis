@@ -113,8 +113,13 @@ def test_registry_execute_many_runs_in_parallel(registry):
 def test_registry_reports_missing_capabilities_clearly(registry):
     """Capability reports must tell the truth about this machine."""
     result = registry.execute_sync("take_desktop_screenshot", {})
-    message = f"{result.content} {result.error}".lower()
-    assert "display" in message or "install" in message or "backend" in message
+    if result.ok:
+        # On a machine with a real display the screenshot succeeds — that is
+        # the capability being "clearly reported" (a non-empty path/content).
+        assert (result.content or "").strip(), "successful screenshot must return a path"
+    else:
+        message = f"{result.content} {result.error}".lower()
+        assert "display" in message or "install" in message or "backend" in message
 
 
 # ── filesystem ────────────────────────────────────────────────────────────
@@ -201,7 +206,11 @@ def test_destructive_bash_needs_confirmation(config, registry):
     confirmed = registry.execute_sync("run_bash",
                                       {"command": "rm -rf /tmp/jarvis-not-real",
                                        "confirm_destructive": True})
-    assert confirmed.ok or "no such file" in f"{confirmed.error}{confirmed.content}".lower()
+    combined = f"{confirmed.error}{confirmed.content}".lower()
+    assert (confirmed.ok
+            or "no such file" in combined
+            or "not recognized" in combined   # Windows: 'rm' is not a cmd
+            or "cannot find" in combined)
 
 
 def test_safe_bash_runs(config, registry):

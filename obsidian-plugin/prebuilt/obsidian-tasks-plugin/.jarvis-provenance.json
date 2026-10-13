@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "obsidian-tasks-plugin",
+  "name": "Tasks",
+  "version": "8.5.0",
+  "source": "github-release",
+  "repo": "obsidian-tasks-group/obsidian-tasks",
+  "tag": "8.5.0",
+  "urls": {
+    "manifest.json": "https://github.com/obsidian-tasks-group/obsidian-tasks/releases/download/8.5.0/manifest.json",
+    "main.js": "https://github.com/obsidian-tasks-group/obsidian-tasks/releases/download/8.5.0/main.js",
+    "styles.css": "https://github.com/obsidian-tasks-group/obsidian-tasks/releases/download/8.5.0/styles.css"
+  },
+  "sha256": {
+    "main.js": "f901cc5537518787cd07db251d8b0db43491a127440d1b415f9cae950fbb587b",
+    "manifest.json": "1920ee9d69357bdc4685becf9738da59a43132a57edf2ef4cf06ec62f2445eff",
+    "styles.css": "1e2cbfff193a8086c07219b140fb52782348a7cf037ea101d8a5e5e92f7093b9"
+  },
+  "fetched_at": "2026-10-12T13:51:05+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}
