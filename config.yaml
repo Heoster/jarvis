@@ -26,24 +26,12 @@ brain:
 
 # ── LLM Backend + Auto-Fallback Chain ───────────────────────────────────────
 llm:
-  provider: "auto"                 # auto | ollama | groq | cerebras | openrouter | gemini | hf | stub
-  model: "llama3.2:3b"             # best tool-calling 3B on Ollama; hermes3:3b does NOT emit proper tool_calls
-  base_url: "http://localhost:11434"
-  temperature: 0.3
-  max_tokens: 2048                 # max generation per turn
-  context_window: 16384            # total budget we target
-  request_timeout: 60              # per-LLM-call timeout; Groq fallback kicks in after this
-  # Ordered fallback chain. JARVIS walks down this list on any failure,
-  # rate-limit, quota exhaustion or unhealthy probe.
-  fallback_chain: ["ollama", "groq", "cerebras", "openrouter", "gemini", "hf", "stub"]
+
   # Provider-specific models used when the primary chain member is selected.
   provider_models:
     ollama: "llama3.2:3b"           # proper tool-calling; switch to qwen2.5:7b-instruct for better quality
     groq: "llama-3.3-70b-versatile"
-    cerebras: "llama3.1-8b"
-    openrouter: "nvidia/nemotron-3-super-120b-a12b:free"
-    gemini: "gemini-2.0-flash-lite"
-    hf: "Qwen/Qwen2.5-7B-Instruct"
+
   api_manager:
     health_cache_seconds: 90       # how long a probe result is trusted
     probe_on_start: true

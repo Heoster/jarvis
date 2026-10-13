@@ -34,6 +34,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ..persona import OPERATOR, OperatorProfile
 from ..utils.logger import get_logger
+from .tool_guide import guide_lines
 
 log = get_logger("core.system_prompt")
 
@@ -58,9 +59,12 @@ CATEGORY_GUIDE: Dict[str, str] = {
 
 PLAYBOOKS: Dict[str, List[str]] = {
     "browser": [
-        "Launch/attach Chrome with `browser_launch` (JARVIS can also start it from the "
-        "terminal: `scripts/chrome-harness.sh`).",
-        "Know where you are: `browser_status`, `page_tabs`.",
+        "Chrome is opened ONLY when the operator asks to open, visit, browse or play "
+        "something on the web. Never launch a browser for a question, a calculation, "
+        "a memory lookup or a file task, and never launch one just to 'get ready'.",
+        "Check first: `browser_status` / `page_tabs` — if a window is already open, "
+        "reuse it. Open a new one only with `browse_open` (or `browser_launch` if the "
+        "operator explicitly asks for a plain Chrome window).",
         "One job per tab: `browse_open(url, new_tab=true)`; switch with "
         "`page_tab_switch`, tidy up with `page_tab_close`.",
         "Prefer URL injection over typing (search URLs, ?q=, /search/… paths). Type "
@@ -528,13 +532,17 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
     env = environment if environment is not None else collect_environment(config)
 
     names: List[str] = []
+    descriptions: Dict[str, str] = {}
     for item in tools or []:
         name = getattr(item, "name", None)
         if name is None and isinstance(item, Mapping):
             function = item.get("function") if isinstance(item.get("function"), Mapping) else {}
             name = function.get("name") or item.get("name")
+            descriptions[str(name or "")] = str(function.get("description") or "")
         if name:
             names.append(str(name))
+            if str(name) not in descriptions:
+                descriptions[str(name)] = str(getattr(item, "description", "") or "")
 
     def tool_line() -> str:
         unique = sorted(set(names))
@@ -543,9 +551,12 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
         if len(unique) > 40:
             return (f"\n- Bound this turn: all {len(unique)} registered tools "
                     "(their schemas are attached); call them by exact name.")
+        guide = guide_lines(unique, descriptions)
+        guide_block = ("\n  When to use each bound tool:\n  " + "\n  ".join(guide)
+                       if guide else "")
         return ("\n- Bound this turn: " + ", ".join(unique)
                 + "\n  (only these exist right now; ask for another by describing "
-                  "the need)")
+                  "the need)" + guide_block)
 
     category_lines: List[str] = []
     for category, count in sorted(env.tool_categories.items(), key=lambda item: -item[1]):
@@ -584,7 +595,7 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
 
     full_operator = [f"- {fact['key']}: {fact['value']}" for fact in prof.facts()]
     text = render(operator=full_operator, environment=env.lines(),
-                  playbooks="## PLAYBOOKS\n" + render_playbooks(),
+                  playbooks=render_playbooks(),
                   categories=category_lines)
     if len(text) <= max_chars:
         return text
@@ -599,7 +610,7 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
 
     # 2) compress operator + environment detail, keep the playbooks
     text = render(operator=_compact_operator(prof), environment=_compact_environment(env),
-                  playbooks="## PLAYBOOKS\n" + render_playbooks(),
+                  playbooks=render_playbooks(),
                   categories=category_lines)
     if len(text) <= max_chars:
         log.debug(f"system prompt trimmed to {len(text)} chars (compact facts)")
@@ -607,7 +618,7 @@ def build_universal_prompt(*, profile: Optional[OperatorProfile] = None,
 
     # 3) shorten the playbooks to their first step each
     text = render(operator=_compact_operator(prof), environment=_compact_environment(env),
-                  playbooks="## PLAYBOOKS\n" + render_playbooks(),
+                  playbooks=render_playbooks(),
                   categories=[line.split(":")[0] for line in category_lines],
                   index=render_playbook_index())
     if len(text) <= max_chars:

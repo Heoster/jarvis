@@ -70,9 +70,9 @@ scripts/start-xvfb.sh        # headless Linux: virtual display for screen contro
 | --- | --- | --- |
 | Ollama (local) | unlimited | primary brain |
 | Groq | generous RPM/RPD | first cloud fallback |
-| Cerebras | generous RPM/RPD | second fallback |
-| OpenRouter `:free` | 20 req/min-ish | third fallback |
+| OpenRouter (free router) | 20 req/min-ish | third fallback |
 | Gemini | generous RPD | fourth fallback |
+| Hugging Face | serverless rate limited | fifth fallback |
 | Tavily | 1 000 searches/month | search #1 |
 | Serper | 2 500 credits total | search #2 |
 | SearXNG (self-host) | unlimited | search #3 |

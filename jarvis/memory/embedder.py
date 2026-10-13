@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import re
 import threading
 from collections import Counter
@@ -206,9 +205,9 @@ class Embedder:
                          or (lt or {}).get("embedding_model", "nomic-embed-text"))
         self.dim = int(cfg.get("embedding_dim")
                        or (lt or {}).get("embedding_dim", EMBEDDING_DIM))
-        self.base_url = str((cfg.get("llm") or {}).get("base_url", "http://localhost:11434")) \
-            if isinstance(cfg.get("llm"), Mapping) else "http://localhost:11434"
-        self.base_url = str(os.environ.get("OLLAMA_BASE_URL", self.base_url))
+        from ..core.ollama_runtime import resolve_base_url
+
+        self.base_url = resolve_base_url({"llm": cfg.get("llm") or {}})
 
         self._local = LocalHashingEmbedder(self.dim)
         self._ollama: Optional[OllamaEmbedder] = None

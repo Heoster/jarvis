@@ -129,10 +129,6 @@ TOOL_KEYWORDS: Dict[str, Tuple[str, ...]] = {
 
 _ALWAYS_ON = ("utility", "memory")
 
-# Tools that must always be available regardless of topic — they are how the
-# model discovers what else it can call and corrects its own mistakes.
-_ALWAYS_INCLUDE = ("list_available_tools", "tool_help", "recall",
-                   "get_current_datetime", "calculate")
 
 
 @dataclass
@@ -164,6 +160,12 @@ class ThinkingTrace:
         return " · ".join(bits)
 
 
+_SMALLTALK_RE = re.compile(
+    r"^(h+i+|hello|hey+|yo|namaste|namaskar|good (morning|afternoon|evening|night)|"
+    r"thanks?|thank you|thx|ok|okay|bye|ty|kaise ho|kya haal hai|how are you"
+    r"|how r u)[\s!.?]*$")
+
+
 class Brain:
     """LLM front-end: context-managed prompting + selective tool binding."""
 
@@ -193,13 +195,18 @@ class Brain:
         log.info(f"bound {len(tools)} tools")
 
     def categories_for(self, text: str) -> List[str]:
-        """Rank categories by how strongly the message matches their keywords."""
+        """Rank categories by how strongly the message matches their keywords.
+
+        Keywords match whole words (with a plural/tense suffix allowed), not raw
+        substrings: "display" must not wake the browser toolbox, "happy" must not
+        wake the screen toolbox, "password" must not wake the word-list tools.
+        """
         lowered = (text or "").lower()
         scored: List[tuple[float, str]] = []
         for category, words in TOOL_KEYWORDS.items():
             score = 0.0
             for word in words:
-                if word in lowered:
+                if _keyword_hit(word, lowered):
                     # longer keywords are far more specific ("screenshot" > "app")
                     score += 1.0 + (0.4 * min(len(word), 12) / 12)
             if score:
@@ -227,6 +234,9 @@ class Brain:
             return pool
 
         lowered = (message or "").lower()
+        # small talk needs no tools; binding them only gives the model a list to recite
+        if _SMALLTALK_RE.match(lowered.strip()):
+            return []
         ranked_categories = self.categories_for(message)
         category_score = {name: len(ranked_categories) - index
                           for index, name in enumerate(ranked_categories)}

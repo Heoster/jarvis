@@ -18,7 +18,9 @@ Design notes
   in a thread so the async orchestrator does not block.
 * Health is cached for ``llm.api_manager.health_cache_seconds``.
 * Failures apply exponential backoff per provider, capped by config.
-* The chain always ends in ``stub``, so a reply is *always* produced.
+* The chain is ``ollama → groq → gemini → openrouter → hf``.  When every member
+  fails the manager raises :class:`AllProvidersFailed` and the caller shows the
+  error — it never fabricates an answer.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from ..utils.sanitizer import redact_secrets
 from .messages import AIMessage, ensure_messages
 from .providers import (
     PROVIDER_SPECS, BaseProvider, LLMError, LLMResponse, ProviderUnavailable,
-    ProviderSpec, build_provider,
+    ProviderSpec, build_provider, is_model_unavailable,
 )
 
 log = get_logger("api")
@@ -52,7 +54,6 @@ __all__ = [
 # rate limiter can enforce in real time.
 _PROVIDER_RATE_HINTS: Dict[str, Tuple[int, int]] = {
     "groq": (30, 14_400),
-    "cerebras": (30, 14_400),
     "openrouter": (20, 50),
     "gemini": (15, 1_500),
     "hf": (10, 1_000),
@@ -65,7 +66,20 @@ _PROVIDER_RATE_HINTS: Dict[str, Tuple[int, int]] = {
 
 
 class AllProvidersFailed(RuntimeError):
-    """Raised only if even the stub fallback fails (should never happen)."""
+    """Every provider in the chain was tried and none answered.
+
+    ``attempts`` lists ``(provider, reason)`` in the order they were tried, so the
+    operator can see exactly why each one was skipped or failed.
+    """
+
+    def __init__(self, message: str, attempts: Sequence[Tuple[str, str]] = ()):
+        super().__init__(message)
+        self.attempts: List[Tuple[str, str]] = list(attempts)
+
+
+#: production order.  ``stub`` is deliberately absent: a turn that no real model
+#: can answer is reported as an error, not answered with a canned template.
+DEFAULT_CHAIN: Tuple[str, ...] = ("ollama", "groq", "gemini", "openrouter", "hf")
 
 
 @dataclass
@@ -100,6 +114,9 @@ class ProviderHealth:
         self.total_calls: int = 0
         self.total_failures: int = 0
         self.last_error: str = ""
+        # Set when the provider reports its model is gone (404 / model_not_supported).
+        # Retrying cannot fix that, so the provider is skipped for the rest of the session.
+        self.disabled: bool = False
         self.backoff_until: float = 0.0
         self.provider: Optional[BaseProvider] = None
 
@@ -175,32 +192,28 @@ class APIManager:
 
     # ── chain handling ─────────────────────────────────────────────────────
     def _normalise_chain(self) -> List[str]:
+        """Forced provider first (if any), then ``llm.fallback_chain`` in order.
+
+        Unknown names are dropped with a warning; duplicates keep their first
+        position.  ``stub`` only appears if the operator asked for it explicitly.
+        """
         chain: List[str] = []
         forced = str(self.llm_cfg.get("provider", "auto")).lower()
         if forced and forced not in ("auto", ""):
             chain.append(forced)
-        for name in self.llm_cfg.get("fallback_chain") or []:
+        configured = self.llm_cfg.get("fallback_chain") or list(DEFAULT_CHAIN)
+        for name in configured:
             name = str(name).lower()
             if name not in chain:
                 chain.append(name)
-        for name in ("ollama", "stub"):
-            if name not in chain:
-                chain.append(name)
-        # keep a deterministic priority order inside the explicit chain
-        return [n for n in chain if n in self.states] + \
-               [n for n in self.states if n not in chain and n == "stub"]
+        known = [n for n in chain if n in self.states]
+        for unknown in (n for n in chain if n not in self.states):
+            log.warning(f"ignoring unknown provider '{unknown}' in the fallback chain")
+        return known
 
     def _ordered_candidates(self, *, skip: Iterable[str] = ()) -> List[str]:
         skip = set(skip)
-        ordered = [n for n in self.chain if n not in skip]
-        # healthy-but-not-in-chain providers can still act as late fallbacks
-        rest = sorted(
-            (n for n in self.states
-             if n not in skip and n not in self.chain and n != "stub"),
-            key=lambda n: self.states[n].spec.priority,
-        )
-        tail = [n for n in ("stub",) if n not in skip and n not in ordered]
-        return ordered + rest + tail
+        return [n for n in self.chain if n not in skip]
 
     # ── health ─────────────────────────────────────────────────────────────
     def check_health(self, name: str, *, force: bool = False,
@@ -224,7 +237,8 @@ class APIManager:
         state.latency_ms = latency
         state.detail = detail
         if ok:
-            state.status = "healthy" if latency < 5_000 else "degraded"
+            if not state.disabled:  # a session-disabled provider stays disabled
+                state.status = "healthy" if latency < 5_000 else "degraded"
             state.consecutive_failures = 0
             state.backoff_until = 0.0
         else:
@@ -322,13 +336,98 @@ class APIManager:
                          daemon=True).start()
 
     # ── completion with fallback ───────────────────────────────────────────
+    def _attempt(self, name: str, provider: BaseProvider, msgs: Sequence[Any],
+                 context: Dict[str, Any], budget_tokens: int
+                 ) -> Tuple[Optional[LLMResponse], Optional[Exception]]:
+        """Call one provider, retrying only rate limits.  Never raises."""
+        state = self.states[name]
+        attempt = 0
+        while True:
+            attempt += 1
+            start = time.perf_counter()
+            try:
+                response = provider.complete(msgs, **context)  # type: ignore[arg-type]
+            except (LLMError, ProviderUnavailable) as exc:
+                self._mark_failure(state, str(exc))
+                if not isinstance(exc, ProviderUnavailable) and is_model_unavailable(exc):
+                    state.disabled = True
+                    state.status = "disabled"
+                    state.detail = f"model unavailable: {redact_secrets(str(exc))[:120]}"
+                    log.warning(f"{name} disabled for this session: {state.detail}")
+                    return None, exc
+                retryable = getattr(exc, "retryable", True)
+                if retryable and attempt <= self.max_retries and "429" in str(exc):
+                    wait = min(8.0, self.backoff_base * attempt)
+                    log.warning(f"{name} rate limited, retrying in {wait:.1f}s")
+                    time.sleep(wait)
+                    continue
+                state.status = "down"
+                log.warning(f"{name} failed ({attempt} attempt(s)): "
+                            f"{redact_secrets(str(exc))[:180]}")
+                return None, exc
+            except Exception as exc:  # unexpected adapter bug — still just a failure
+                self._mark_failure(state, f"{type(exc).__name__}: {exc}")
+                state.status = "down"
+                log.error(f"{name} crashed: {exc}")
+                return None, exc
+
+            if budget_tokens:
+                self.quota.refund(name, 1)  # replace the coarse unit
+                self.quota.allow(name, cost=max(1, budget_tokens // 1000))
+            state.total_calls += 1
+            state.consecutive_failures = 0
+            state.status = "healthy"
+            state.last_error = ""
+            log.debug(f"completion via {name} in "
+                      f"{int((time.perf_counter() - start) * 1000)} ms")
+            return response, None
+
+    def _mark_failure(self, state: ProviderHealth, detail: str) -> None:
+        state.total_failures += 1
+        state.consecutive_failures += 1
+        state.last_error = detail
+        state.backoff_until = time.time() + self._backoff(state.consecutive_failures)
+
+    def _gate(self, name: str, provider: BaseProvider) -> str:
+        """Why ``name`` must not be called right now, or ``""`` if it may be."""
+        state = self.states[name]
+        if not provider.is_configured():
+            state.status = "unconfigured"
+            state.detail = provider.availability_problem()
+            return state.detail
+        if state.disabled:
+            return f"disabled this session: {state.detail}"
+        if time.time() < state.backoff_until:
+            wait = int(state.backoff_until - time.time())
+            return f"cooling down {wait}s after: {state.last_error[:80]}"
+        health = self.check_health(name)
+        if health.status == "down":
+            return f"unhealthy: {health.detail[:100]}"
+        if not self.quota.allow(name, cost=1):
+            state.status = "exhausted"
+            state.detail = "quota exhausted (free limit)"
+            return "free quota exhausted"
+        rpm, _rpd = _PROVIDER_RATE_HINTS.get(name, (60, 0))
+        limiter = self.limiters.get(f"{name}:min", rpm, 60.0)
+        if not limiter.acquire(timeout=0.0):
+            wait = limiter.wait_time()
+            if wait > 5:
+                state.detail = f"local rate limit hit, retry in {wait:.0f}s"
+                return state.detail
+            limiter.acquire(timeout=min(wait + 1, 10))
+        return ""
+
     def complete(self, messages: Sequence[Any], *, tools: Optional[Sequence[Any]] = None,
                  temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None,
                  json_mode: bool = False,
                  preferred: Optional[str] = None,
                  budget_tokens: int = 0) -> LLMResponse:
-        """Try providers in order until one answers.
+        """Try providers in chain order until one answers.
+
+        Order: ollama (only if it is actually served) → groq → gemini →
+        openrouter → hf.  If every one of them fails, :class:`AllProvidersFailed`
+        is raised with the per-provider reasons; callers show that as an error.
 
         ``budget_tokens`` (when > 0) charges the provider's quota by estimated
         token cost so long generations count against the right allowance.
@@ -340,107 +439,34 @@ class APIManager:
         if preferred and preferred in self.states:
             candidates = [preferred] + [c for c in candidates if c != preferred]
 
-        attempted: List[str] = []
-        last_error: Optional[Exception] = None
-        first_attempt = True
+        trace: List[Tuple[str, str]] = []   # every provider, in order, with why
 
-        for name in candidates:
-            state = self.states[name]
-            provider = state.provider
-            attempted.append(name)
+        for index, name in enumerate(candidates):
+            provider = self.states[name].provider
             if provider is None:
+                trace.append((name, "not constructed"))
+                continue
+            reason = self._gate(name, provider)
+            if reason:
+                trace.append((name, reason))
                 continue
 
-            if not provider.is_configured():
-                state.status = "unconfigured"
-                state.detail = provider.availability_problem()
-                if first_attempt:
-                    first_attempt = False
-                    continue
-                continue
+            response, error = self._attempt(name, provider, msgs, context, budget_tokens)
+            if response is not None:
+                if trace:  # someone earlier in the chain was skipped or failed
+                    response.fallback_from = trace[0][0]
+                    response.degraded = True
+                return response
 
-            # backoff gate (skip providers we know are cooling down)
-            if time.time() < state.backoff_until:
-                continue
-
-            # health verification (cached)
-            health = self.check_health(name)
-            if health.status == "down":
-                continue
-
-            # free-tier / rate-limit gates
-            if not self.quota.allow(name, cost=1):
-                state.status = "exhausted"
-                state.detail = f"quota exhausted (free limit)"
-                continue
-            rpm, rpd = _PROVIDER_RATE_HINTS.get(name, (60, 0))
-            limiter = self.limiters.get(f"{name}:min", rpm, 60.0)
-            if not limiter.acquire(timeout=0.0):
-                wait = limiter.wait_time()
-                if wait > 5:
-                    state.detail = f"local rate limit hit, retry in {wait:.0f}s"
-                    continue
-                limiter.acquire(timeout=min(wait + 1, 10))
-
-            attempt = 0
-            while attempt <= self.max_retries:
-                attempt += 1
-                try:
-                    start = time.perf_counter()
-                    response = provider.complete(msgs, **context)  # type: ignore[arg-type]
-                    if budget_tokens:
-                        self.quota.refund(name, 1)  # replace the coarse unit
-                        self.quota.allow(name, cost=max(1, budget_tokens // 1000))
-                    state.total_calls += 1
-                    state.consecutive_failures = 0
-                    state.status = "healthy"
-                    state.last_error = ""
-                    if not first_attempt:
-                        response.fallback_from = attempted[0]
-                        response.degraded = True
-                    log.debug(f"completion via {name} in "
-                              f"{int((time.perf_counter()-start)*1000)} ms")
-                    return response
-                except (LLMError, ProviderUnavailable) as exc:
-                    last_error = exc
-                    state.total_failures += 1
-                    state.consecutive_failures += 1
-                    state.last_error = str(exc)
-                    state.backoff_until = time.time() + self._backoff(
-                        state.consecutive_failures)
-                    retryable = getattr(exc, "retryable", True)
-                    if retryable and attempt <= self.max_retries and \
-                            "429" in str(exc):
-                        wait = min(8.0, self.backoff_base * attempt)
-                        log.warning(f"{name} rate limited, retrying in {wait:.1f}s")
-                        time.sleep(wait)
-                        continue
-                    state.status = "down"
-                    log.warning(f"{name} failed ({attempt} attempt(s)): "
-                                f"{redact_secrets(str(exc))[:180]}")
-                    break
-                except Exception as exc:  # unexpected adapter bug
-                    last_error = exc
-                    state.total_failures += 1
-                    state.consecutive_failures += 1
-                    state.last_error = f"{type(exc).__name__}: {exc}"
-                    state.backoff_until = time.time() + self._backoff(
-                        state.consecutive_failures)
-                    state.status = "down"
-                    log.error(f"{name} crashed: {exc}")
-                    break
-
-            # move to the next provider
-            nxt = next((c for c in candidates if c not in attempted), "stub")
-            self._record_fallback(name, nxt,
-                                  state.last_error or state.detail or "unavailable")
+            detail = redact_secrets(str(error)) if error else "unavailable"
+            trace.append((name, detail))
+            upcoming = candidates[index + 1] if index + 1 < len(candidates) else "error"
+            self._record_fallback(name, upcoming, detail)
             self._verify_later(name)
-            first_attempt = False
 
+        summary = "; ".join(f"{n}: {r[:120]}" for n, r in trace) or "chain is empty"
         raise AllProvidersFailed(
-            "every provider failed; attempted: " + ", ".join(attempted)
-            + (f"; last error: {last_error}" if last_error else "")
-        )
+            f"every LLM provider failed — {summary}", attempts=trace)
 
     async def acomplete(self, messages: Sequence[Any], **kwargs: Any) -> LLMResponse:
         """Async wrapper — runs the blocking chain in a worker thread."""
@@ -463,9 +489,9 @@ class APIManager:
             if state.status in ("healthy",) and self.quota.allow(name, cost=0):
                 return name
         for name in self.chain:
-            if self.states[name].status != "unconfigured":
+            if self.states[name].status in ("unknown", "degraded"):
                 return name
-        return "stub"
+        return "none"
 
     def summary_table(self) -> List[Tuple[str, str, str, str]]:
         """``(provider, status, latency, note)`` rows for the CLI."""

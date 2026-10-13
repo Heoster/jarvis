@@ -45,9 +45,6 @@ DEFAULTS: Dict[str, Any] = {
     "llm": {
         "provider": "auto", "model": "llama3.2:3b",
         "base_url": "http://localhost:11434", "temperature": 0.3,
-        "max_tokens": 2048, "context_window": 16384, "request_timeout": 60,
-        "fallback_chain": ["ollama", "groq", "cerebras", "openrouter",
-                           "gemini", "hf", "stub"],
         "provider_models": {},
         "api_manager": {"health_cache_seconds": 90, "probe_on_start": True,
                         "auto_heal": True, "max_retries_per_provider": 2,
@@ -438,7 +435,6 @@ def _apply_env_overrides(cfg: Dict[str, Any], env: Mapping[str, str]) -> Dict[st
 # skipped and the free/unauthenticated path is used).
 _SECRET_MAP: Dict[str, tuple[str, ...]] = {
     "llm.groq.api_key": ("GROQ_API_KEY",),
-    "llm.cerebras.api_key": ("CEREBRAS_API_KEY",),
     "llm.openrouter.api_key": ("OPENROUTER_API_KEY",),
     "llm.gemini.api_key": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "llm.hf.api_key": ("HUGGINGFACE_API_KEY", "HF_TOKEN"),
