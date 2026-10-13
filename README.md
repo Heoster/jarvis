@@ -519,12 +519,11 @@ page directly. Matching is also Romanisation-tolerant now ("tare" → "taare"),
 reported with its score.
 
 ```bash
-python -m jarvis tool media_play '{"query":"kesariya arijit singh"}'
-python -m jarvis tool media_play '{}'                    # replay the last song
-python -m jarvis tool media_play '{}' --json             # with query "my favourite song"
-python -m jarvis tool media_history '{"day":"yesterday"}'
-python -m jarvis tool media_favourite '{"song":"Kesariya – Arijit Singh"}'
-python -m jarvis tool page_tabs '{}'                     # or page_tab_switch / page_tab_close
+python -m jarvis call media_play '{"query":"kesariya arijit singh"}'
+python -m jarvis call media_play '{}'                    # replay the last song
+python -m jarvis call media_history '{"day":"yesterday"}'
+python -m jarvis call media_favourite '{"song":"Kesariya – Arijit Singh"}'
+python -m jarvis call page_tabs '{}'                     # or page_tab_switch / page_tab_close
 ```
 
 The flow, exactly: launch Chrome → **new tab** → inject the YouTube search URL (no
@@ -795,10 +794,59 @@ Useful environment variables: `JARVIS_CONFIG` (alternate config file), `JARVIS_T
 
 ---
 
+## Testing a tool without the model
+
+A tool bug is invisible until the model decides to call it — and then it shows up
+as a schema error nobody can debug. So the tool layer is testable on its own,
+with no provider, no API key and no browser:
+
+```bash
+python -m jarvis tools --smoke                 # contract checks + 40 safe probes
+python -m jarvis tools --smoke --verbose       # list every probe with its timing
+python -m jarvis tools --smoke --strict        # contract warnings fail too
+python -m jarvis call calculate '{"expression":"2 + 2 * 3"}'   # one tool, one call
+python -m jarvis call read_file '{"path":"./README.md","max_chars":400}'
+```
+
+`--smoke` answers two different questions, because they have different fixes:
+
+| check | what it proves | what a failure means |
+| --- | --- | --- |
+| **contract** (all 125 tools) | the schema a provider receives is valid: snake_case name, a description the model can act on, every parameter typed and documented, `required` ⊆ `properties`, JSON-serialisable | the model cannot call it correctly — usually a missing type hint or an undocumented argument |
+| **probe** (40 curated calls) | the tool *runs* and either works or explains itself: calculator, JSON helpers, file reads against a scratch directory, memory lookups, the capability reports | a leak: an exception escaped instead of becoming a message (💥), or a tool that should always work didn't (❌) |
+
+Probes are deliberately read-only, offline and side-effect free — no network, no
+cursor, no browser, no writes outside a temp directory. Tools that need those are
+contract-checked only; use `jarvis browser --verify`, `jarvis screen` and
+`jarvis doctor` for their runtime.
+
+In pytest the same two checks live in `tests/test_tool_smoke.py`, and
+`tests/tool_harness.py` is the helper for the focused test you are about to
+write:
+
+```python
+from tool_harness import run_tool, assert_clean
+
+def test_my_tool_handles_a_missing_file():
+    result = run_tool("read_file", path="/definitely/not/here.txt")
+    assert_clean(result)          # a message, not a traceback
+```
+
+Adding a probe is one line in `jarvis/tools/selftest.py` — name, args, whether it
+must succeed, and why the call is safe:
+
+```python
+Probe("calculate", {"expression": "2 + 2 * 3"}, "ok", "arithmetic, no I/O"),
+Probe("obsidian_status", {}, "clean", "needs a vault, which may not be configured"),
+```
+
+---
+
 ## Tests
 
 ```bash
-python -m pytest tests/ -q          # 179 tests, no network, no model needed
+python -m pytest tests/ -q          # 508 tests, no network, no model needed
+python -m jarvis tools --smoke      # the same tool checks from the CLI, no pytest
 ```
 
 | File | Covers |
@@ -810,8 +858,11 @@ python -m pytest tests/ -q          # 179 tests, no network, no model needed
 | `tests/test_agent_flow.py` | orchestrator turns, tool selection, agent routing, API surface, CLI wiring |
 | `tests/test_obsidian.py` | vault parsing, search, daily notes, flashcards + SM-2, study kit/plan, plugin install, prebuilt bundles (local HTTP server, digest checks, offline fallback) |
 | `tests/test_coach.py` | retention analytics, the daily brief, idempotent daily-note writes, the scheduler (injected clock), review logging, PyYAML-free frontmatter |
+| `tests/test_tool_smoke.py` | **every** tool's contract (name, description, typed parameters, required list) + 40 safe probes that really call the tool — no model involved |
+| `tests/test_media.py`, `test_youtube_results.py`, `test_playwright_loop.py` | play-a-song flow, the YouTube readers against saved fixtures, the Playwright single-loop guarantee |
 
 Everything is hermetic: a temporary config, a temporary home, blanked API keys, the stub provider.
+`tests/tool_harness.py` is the helper for the next tool test you write — `run_tool("calculate", expression="2+2")` with no model anywhere near it.
 
 ---
 
@@ -862,6 +913,7 @@ jarvis/
 │   ├── filesystem/  file ops (trash-aware), directory tree, search
 │   ├── utility/     calculator, datetime, json, clipboard, image, memory, discovery
 │   ├── obsidian/    vault, flashcards + SM-2 scheduler, study kit/plan, plugins
+│   ├── selftest.py  contract checks + safe probes for every tool (no model)
 │   └── communication/ email, webhooks, notifications, speech
 ├── agents/          base, 6 specialists, factory + routing
 ├── interfaces/      CLI (rich), API server (stdlib/FastAPI)
@@ -873,14 +925,14 @@ obsidian-plugin/      JARVIS for Obsidian (plain-JS community plugin, no build s
   └── prebuilt/       offline cache of community plugin bundles (see its README)
 knowledge/            operator profile, command reference, student workflow
 scripts/             setup, chrome harness, Xvfb, doctor, wrapper
-tests/               330 hermetic tests
+tests/               508 hermetic tests
 ```
 
 ---
 
 ## Status & limits
 
-- **Verified here**: 330 tests (24 of them new: the YouTube readers and the Playwright loop), CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
+- **Verified here**: 508 tests, CLI end-to-end, orchestrator turns (real fallback to `stub`), memory write/recall/consolidate, API server endpoints, crawl chain reporting, bash safety matrix, tool schemas.
 - **Needs hardware to verify**: real Chrome engines, cursor movement and OCR — this sandbox has no browser binary, no `DISPLAY` and no `xdotool`. The harness reports *precisely* what is missing rather than failing silently, and `browser --verify --deep` performs the same check on your machine.
 - **Not implemented on purpose**: any paid API, any vision model, any telemetry. JARVIS sends data nowhere except the providers and readers you configure.
 
