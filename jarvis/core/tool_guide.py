@@ -24,7 +24,8 @@ TOOL_GUIDE: Dict[str, Tuple[str, str]] = {
     ),
     "media_play": (
         "playback must be verified (player state, autoplay) after a song is opened",
-        "query or url; use play_song first, this one only when verification matters",
+        "query or url; use play_song first, this one only when verification matters; "
+        "it reads the results from the page, then over HTTP/Jina if the page is blank",
     ),
     "media_history": (
         "operator asks what they played before, or for a random earlier song",

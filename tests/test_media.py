@@ -21,10 +21,11 @@ from jarvis.tools.browser import media as media_module
 class FakeHarness:
     """Answers the browser calls the media tools make, in order."""
 
-    def __init__(self, results, states, *, engine="playwright"):
+    def __init__(self, results, states, *, engine="playwright", ready="complete"):
         self.results = results                 # what the results page returns
         self.states = list(states)             # player states, one per check
         self.engine = engine
+        self.ready = ready                     # document.readyState the page reports
         self.visits: list = []
         self.keys: list = []
         self.switched: list = []
@@ -40,6 +41,12 @@ class FakeHarness:
         self.evaluated.append(expression)
         if expression is media_module.RESULTS_JS:
             return self.results
+        if expression is media_module.RESULTS_READY_JS:
+            rows = self.results if isinstance(self.results, list) else []
+            return {"consent": False, "renderers": len(rows), "titles": len(rows),
+                    "ready": self.ready, "url": "https://www.youtube.com/results"}
+        if expression is media_module.CONSENT_JS:
+            return {"clicked": False}
         if expression is media_module.PLAYER_JS:
             return self.states.pop(0) if self.states else {"hasVideo": False}
         if expression is media_module.PLAY_JS:
@@ -69,6 +76,20 @@ def history(tmp_path, monkeypatch):
     store = media_module.MediaHistory(path=tmp_path / "media_history.json")
     monkeypatch.setattr(media_module, "_history", lambda config=None: store)
     return store
+
+
+@pytest.fixture(autouse=True)
+def _quick_polling(monkeypatch):
+    """Keep the results-page polling snappy — the waits are not what we test."""
+    monkeypatch.setattr(media_module, "RESULTS_POLL_ATTEMPTS", 3)
+    monkeypatch.setattr(media_module, "RESULTS_POLL_DELAY", 0.01)
+
+
+@pytest.fixture()
+def youtube_html():
+    """A saved YouTube results page (``ytInitialData`` trimmed)."""
+    return (Path(__file__).resolve().parent / "fixtures"
+            / "youtube_search.html").read_text(encoding="utf-8")
 
 
 # ── helpers (pure functions) ────────────────────────────────────────────────
@@ -296,6 +317,156 @@ def test_media_play_without_results_says_so(history, monkeypatch):
     result = media_module.media_play.invoke({"query": "something obscure"})
     assert result.ok is False
     assert "no video results" in result.error
+    # the reader that failed is named, so "no results" is never a guess
+    assert "dom:" in result.error and ("http" in result.error or "reader" in result.error)
+
+
+def test_media_play_falls_back_to_reading_the_page_over_http(history, monkeypatch,
+                                                             youtube_html):
+    """The page is open but unreadable (engine degraded) — ytInitialData saves it."""
+    from jarvis.tools.browser import youtube_results
+
+    monkeypatch.setattr(youtube_results, "http_get", lambda url, **kw: youtube_html)
+    harness = FakeHarness([], [{"hasVideo": True, "paused": False, "currentTime": 4.0,
+                                "duration": 182.0, "title": "Farak - Taare",
+                                "url": "https://www.youtube.com/watch?v=U0EI7XFkkV4"}])
+    monkeypatch.setattr(media_module, "_harness", lambda config=None: harness)
+
+    result = media_module.media_play.invoke({"query": "tare farak"})
+    assert result.ok, result.error
+    assert harness.visits[-1][0] == "https://www.youtube.com/watch?v=U0EI7XFkkV4"
+    assert "Farak - Taare" in result.content
+    assert "read from" in result.content and "ytInitialData" in result.content
+
+
+def test_media_play_falls_back_to_the_reader_when_http_is_blocked(history, monkeypatch):
+    """Direct GET refused (proxy/firewall): r.jina.ai still lists the results."""
+    from jarvis.tools.browser import youtube_results
+    from jarvis.tools.crawl import jina_reader
+
+    markdown = (Path(__file__).resolve().parent / "fixtures"
+                / "youtube_search.md").read_text(encoding="utf-8")
+
+    def blocked(url, **kwargs):
+        raise RuntimeError("proxy refused the direct GET")
+
+    monkeypatch.setattr(youtube_results, "http_get", blocked)
+    monkeypatch.setattr(jina_reader, "jina_read", lambda url, **kwargs: markdown)
+    harness = FakeHarness([], [{"hasVideo": True, "paused": False, "currentTime": 1.0,
+                                "duration": 182.0, "title": "Farak - Taare",
+                                "url": "https://www.youtube.com/watch?v=U0EI7XFkkV4"}])
+    monkeypatch.setattr(media_module, "_harness", lambda config=None: harness)
+
+    result = media_module.media_play.invoke({"query": "tare farak"})
+    assert result.ok, result.error
+    assert harness.visits[-1][0] == "https://www.youtube.com/watch?v=U0EI7XFkkV4"
+    assert "Jina" in result.content and "read from" in result.content
+
+
+def test_every_reader_failing_reports_the_reason_not_a_guess(history, monkeypatch):
+    """No DOM, no HTTP, no reader: the error must name what was tried."""
+    from jarvis.tools.browser import youtube_results
+
+    def blocked(url, **kwargs):
+        raise RuntimeError("connect timeout")
+
+    monkeypatch.setattr(youtube_results, "http_get", blocked)
+    harness = FakeHarness([], [{"hasVideo": False}])
+    monkeypatch.setattr(media_module, "_harness", lambda config=None: harness)
+    result = media_module.media_play.invoke({"query": "tare farak"})
+    assert result.ok is False
+    assert "no video results" in result.error
+    assert "connect timeout" in result.error
+
+
+def test_media_play_dismisses_the_consent_wall_then_reads(history, monkeypatch):
+    """A consent wall is clicked through instead of being read as 'no results'."""
+    class ConsentHarness(FakeHarness):
+        def __init__(self):
+            super().__init__([], [{"hasVideo": True, "paused": False, "currentTime": 2.0,
+                                   "duration": 200.0, "title": "Taare",
+                                   "url": "https://www.youtube.com/watch?v=abc123def45"}],
+                             ready="loading")
+            self.clicked = False
+
+        async def evaluate(self, expression):
+            self.evaluated.append(expression)
+            if expression is media_module.CONSENT_JS:
+                self.clicked = True
+                return {"clicked": True}
+            return await FakeHarness.evaluate(self, expression)
+
+    harness = ConsentHarness()
+    monkeypatch.setattr(media_module, "_harness", lambda config=None: harness)
+    monkeypatch.setattr(media_module, "RESULTS_POLL_DELAY", 0.01)
+    result = media_module.media_play.invoke({"query": "taare"})
+    assert harness.clicked is True
+    assert result.ok is False                 # offline: no reader can list results
+    assert media_module.CONSENT_JS in harness.evaluated
+
+
+def test_results_are_read_from_the_page_when_the_engine_is_slow(history, monkeypatch):
+    """Results that appear a second later are still found (the original bug)."""
+    class SlowHarness(FakeHarness):
+        def __init__(self):
+            super().__init__([], [{"hasVideo": True, "paused": False, "currentTime": 3.0,
+                                   "duration": 240.0, "title": "Kesariya",
+                                   "url": "https://www.youtube.com/watch?v=kesariya01"}],
+                             ready="loading")
+            self.reads = 0
+
+        async def evaluate(self, expression):
+            if expression is media_module.RESULTS_JS:
+                self.reads += 1
+                if self.reads < 3:                     # YouTube has not hydrated yet
+                    return []
+                return [{"title": "Kesariya – Arijit Singh", "id": "kesariya01",
+                         "href": "https://www.youtube.com/watch?v=kesariya01",
+                         "channel": "T-Series", "duration": "4:28"}]
+            return await super().evaluate(expression)
+
+    harness = SlowHarness()
+    monkeypatch.setattr(media_module, "_harness", lambda config=None: harness)
+    result = media_module.media_play.invoke({"query": "kesariya"})
+    assert result.ok, result.error
+    assert harness.reads == 3                           # it waited instead of giving up
+    assert harness.visits[-1][0] == "https://www.youtube.com/watch?v=kesariya01"
+
+
+# ── matching: what "tare farak" should actually pick ────────────────────────
+def test_scoring_matches_romanised_spellings_and_skips_loops():
+    entries = [
+        {"title": "Farak - Taare | Official Music Video |", "duration": "3:02",
+         "channel": "Farak and Mashooriya Originals", "id": "official"},
+        {"title": "Taare - Farak | (Lyrics)", "duration": "2:35", "channel": "x",
+         "id": "lyrics"},
+        {"title": "Farak - Taare | Official Music Video | 1 HOUR LOOP",
+         "duration": "1:03:31", "channel": "x", "id": "loop"},
+        {"title": "Taare - Farak | lyrics. #shorts", "duration": "0:41", "channel": "x",
+         "id": "short"},
+        {"title": "Completely unrelated video", "duration": "5:00", "channel": "x",
+         "id": "other"},
+    ]
+    assert media_module.fold_word("taare") == "tare"      # "tare" vs "taare"
+    chosen = media_module.choose_candidate(entries, "tare farak")
+    assert chosen["id"] == "official"
+    assert (media_module.score_candidate(entries[0], "tare farak")
+            > media_module.score_candidate(entries[2], "tare farak")
+            > media_module.score_candidate(entries[4], "tare farak"))
+
+
+def test_entries_are_coerced_from_whatever_the_browser_returned():
+    assert media_module._coerce_entries(None) == []
+    assert media_module._coerce_entries("junk") == []
+    rows = media_module._coerce_entries(
+        [{"title": "A", "videoId": "abc12345678"},
+         {"title": "B", "href": "https://www.youtube.com/watch?v=xyz98765432"},
+         {"title": "no id at all"}, "not a dict"])
+    assert [row["id"] for row in rows] == ["abc12345678", "xyz98765432"]
+    assert rows[0]["href"] == "https://www.youtube.com/watch?v=abc12345678"
+    # a json-stringified reply (some engines wrap the result)
+    assert media_module._coerce_entries(
+        {"result": [{"title": "A", "id": "abc12345678"}]})[0]["id"] == "abc12345678"
 
 
 def test_media_history_tool_answers_the_yesterday_question(history):

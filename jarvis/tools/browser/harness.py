@@ -28,7 +28,9 @@ with the reason recorded so ``/browser`` can explain what is available.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -178,7 +180,22 @@ class BaseEngine:
 
 
 class PlaywrightEngine(BaseEngine):
-    """Playwright — the default: reliable, headless-capable, stealthy."""
+    """Playwright — the default: reliable, headless-capable, stealthy.
+
+    One rule governs this engine: **every Playwright call runs on the same
+    event loop**, the one owned by ``self._thread``.  Playwright's async objects
+    (connection, browser, context, page) are bound to the loop they were created
+    on; driving them from a second loop — which is exactly what happened when
+    ``start()`` ran in a throw-away ``asyncio.run()`` and the tools then awaited
+    ``goto()`` on the agent's loop — surfaces as the baffling
+    ``BrowserContext.new_page: 'NoneType' object has no attribute 'send'`` and
+    the whole engine is written off as broken.
+
+    So ``start()`` boots Playwright on that loop and every public action is a
+    thin dispatcher: the body stays a coroutine, but it is *executed* on the
+    engine's loop and awaited back on the caller's (``asyncio.wrap_future``),
+    which keeps the agent's loop free instead of blocking it.
+    """
 
     name = "playwright"
     uses_dom = True
@@ -189,6 +206,47 @@ class PlaywrightEngine(BaseEngine):
         self._browser = None
         self._page = None
         self._context = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+
+    # ── the dedicated loop ─────────────────────────────────────────────────
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """Start (once) the background thread that owns every Playwright call."""
+        if self._loop is not None and self._thread is not None and self._thread.is_alive():
+            return self._loop
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def runner() -> None:
+            asyncio.set_event_loop(loop)
+            loop.call_soon(ready.set)
+            try:
+                loop.run_forever()
+            finally:                                # stop() closed the browser first
+                with contextlib.suppress(Exception):
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
+
+        self._loop = loop
+        self._thread = threading.Thread(target=runner, name="jarvis-playwright",
+                                        daemon=True)
+        self._thread.start()
+        ready.wait(10)
+        return loop
+
+    def _run(self, coro: Any, *, timeout: Optional[float] = None) -> Any:
+        """Run a coroutine **on the engine loop** and block until it finishes."""
+        loop = self._ensure_loop()
+        limit = (float(timeout) if timeout else
+                 float(self.cfg.get("timeout", 30000)) / 1000.0 + 60.0)
+        return asyncio.run_coroutine_threadsafe(coro, loop).result(limit)
+
+    async def _dispatch(self, coro: Any) -> Any:
+        """Await ``coro`` on the engine loop from whatever loop the caller uses."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return await coro                     # not booted through _ensure_loop
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
 
     def available(self) -> Tuple[bool, str]:
         try:
@@ -199,14 +257,14 @@ class PlaywrightEngine(BaseEngine):
         return True, ("system Chrome will be reused" if binary
                       else "uses bundled Chromium")
 
-    def _launch_kwargs(self) -> Dict[str, Any]:
+    def _launch_kwargs(self, *, with_debug_port: bool = True) -> Dict[str, Any]:
         cfg = self.cfg
         binary = cfg.get("binary_path") or find_chrome_binary()
         args = [
             "--no-sandbox", "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
         ]
-        if binary:
+        if binary and with_debug_port:
             args.append("--remote-debugging-port=" +
                         str(cfg.get("remote_debugging_port") or pick_free_port()))
         kwargs: Dict[str, Any] = {"args": args}
@@ -218,39 +276,79 @@ class PlaywrightEngine(BaseEngine):
             kwargs["headless"] = True
         return kwargs
 
-    def start(self) -> None:
-        import asyncio as _asyncio
-
+    async def _boot(self, *, with_debug_port: bool = True) -> None:
         from playwright.async_api import async_playwright  # type: ignore
 
-        async def boot() -> None:
-            self._pw = await async_playwright().start()
-            browser_type = self.cfg.get("browser_type", "chromium")
-            if browser_type == "firefox":
-                launcher = self._pw.firefox
-            elif browser_type == "webkit":
-                launcher = self._pw.webkit
-            else:
-                launcher = self._pw.chromium
-            self._browser = await launcher.launch(**self._launch_kwargs())
-            window = self.cfg.get("window") or {}
-            context_kwargs: Dict[str, Any] = {
-                "viewport": {"width": int(window.get("width", 1440)),
-                             "height": int(window.get("height", 900))},
-                "locale": "en-IN", "timezone_id": "Asia/Kolkata",
-            }
-            if self.cfg.get("user_agent"):
-                context_kwargs["user_agent"] = self.cfg["user_agent"]
-            if self.cfg.get("user_data_dir"):
-                context_kwargs["user_data_dir"] = self.cfg["user_data_dir"]
-            self._context = await self._browser.new_context(**context_kwargs)
-            self._page = await self._context.new_page()
-            self._page.set_default_timeout(float(self.cfg.get("timeout", 30000)))
-            if self.cfg.get("stealth", True):
-                await self._apply_stealth(self._page)
-            self.started = True
+        self._pw = await async_playwright().start()
+        browser_type = self.cfg.get("browser_type", "chromium")
+        if browser_type == "firefox":
+            launcher = self._pw.firefox
+        elif browser_type == "webkit":
+            launcher = self._pw.webkit
+        else:
+            launcher = self._pw.chromium
+        self._browser = await launcher.launch(**self._launch_kwargs(
+            with_debug_port=with_debug_port))
+        window = self.cfg.get("window") or {}
+        context_kwargs: Dict[str, Any] = {
+            "viewport": {"width": int(window.get("width", 1440)),
+                         "height": int(window.get("height", 900))},
+            "locale": "en-IN", "timezone_id": "Asia/Kolkata",
+        }
+        if self.cfg.get("user_agent"):
+            context_kwargs["user_agent"] = self.cfg["user_agent"]
+        if self.cfg.get("user_data_dir"):
+            context_kwargs["user_data_dir"] = self.cfg["user_data_dir"]
+        self._context = await self._browser.new_context(**context_kwargs)
+        self._page = await self._context.new_page()
+        self._page.set_default_timeout(float(self.cfg.get("timeout", 30000)))
+        if self.cfg.get("stealth", True):
+            await self._apply_stealth(self._page)
+        # Prove the pipe really works before the harness trusts this engine:
+        # a Chrome that died on startup (port already taken, bad profile, …)
+        # fails on the first real command, not here, unless we make it.
+        await self._page.goto("about:blank", timeout=float(self.cfg.get("timeout", 30000)))
+        self.started = True
 
-        self._run(boot())
+    def start(self) -> None:
+        self._ensure_loop()
+        errors: List[str] = []
+        # First try keeps the debug port (the CDP engine can attach to it), then
+        # retry without: port 9222 already being in use is the classic reason
+        # Chrome exits instantly and new_page() reports a broken connection.
+        for attempt, with_debug_port in ((1, True), (2, False)):
+            try:
+                self._run(self._boot(with_debug_port=with_debug_port))
+                return
+            except Exception as exc:
+                errors.append(f"attempt {attempt}: {truncate(str(exc), 160)}")
+                log.warning(f"playwright start failed ({errors[-1]})")
+                self._reset()
+        raise HarnessError("playwright could not start — " + " | ".join(errors))
+
+    async def _shutdown(self) -> None:
+        for closer in (self._context, self._browser):
+            try:
+                if closer is not None:
+                    await closer.close()
+            except Exception:
+                pass
+        try:
+            if self._pw is not None:
+                await self._pw.stop()
+        except Exception:
+            pass
+
+    def _reset(self) -> None:
+        """Drop the half-started objects (and try to close them) after a failure."""
+        if self._loop is not None and self._thread is not None and self._thread.is_alive():
+            try:
+                asyncio.run_coroutine_threadsafe(self._shutdown(),
+                                                 self._loop).result(20)
+            except Exception:
+                pass
+        self._pw = self._browser = self._context = self._page = None
+        self.started = False
 
     @staticmethod
     async def _apply_stealth(page: Any) -> None:
@@ -265,22 +363,7 @@ class PlaywrightEngine(BaseEngine):
         except Exception:
             pass
 
-    def _run(self, coro: Any) -> Any:
-        """Run a coroutine on a private loop (engines are callable from sync code)."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop and loop.is_running():
-            # we are inside an async tool: create a task on a fresh loop in a thread
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(lambda: asyncio.run(coro)).result()
-        return asyncio.run(coro)
-
-    # ── actions ────────────────────────────────────────────────────────────
-    async def goto(self, url: str, *, new_tab: bool = False) -> Dict[str, Any]:
+    async def _goto(self, url: str, *, new_tab: bool = False) -> Dict[str, Any]:
         if not url.startswith(("http://", "https://", "about:", "file:", "chrome://")):
             url = f"https://{url}"
         if new_tab:
@@ -295,21 +378,40 @@ class PlaywrightEngine(BaseEngine):
         await asyncio.sleep(0.35)
         return {"url": page.url, "title": await page.title()}
 
+    # ── actions (each public method dispatches its body onto the engine loop) ─
+    async def goto(self, url: str, *, new_tab: bool = False) -> Dict[str, Any]:
+        return await self._dispatch(self._goto(url, new_tab=new_tab))
+
     async def title(self) -> str:
+        return await self._dispatch(self._title())
+
+    async def _title(self) -> str:
         return await self._page.title() if self._page else ""
 
     async def html(self) -> str:
+        return await self._dispatch(self._html())
+
+    async def _html(self) -> str:
         return await self._page.content() if self._page else ""
 
     async def text(self) -> str:
+        return await self._dispatch(self._text())
+
+    async def _text(self) -> str:
         return await self._page.inner_text("body") if self._page else ""
 
     async def click_selector(self, selector: str) -> bool:
+        return await self._dispatch(self._click_selector(selector))
+
+    async def _click_selector(self, selector: str) -> bool:
         await self._page.click(selector, timeout=6000)
         await asyncio.sleep(0.25)
         return True
 
     async def type_selector(self, selector: str, text: str, *, enter: bool = False) -> bool:
+        return await self._dispatch(self._type_selector(selector, text, enter=enter))
+
+    async def _type_selector(self, selector: str, text: str, *, enter: bool = False) -> bool:
         await self._page.fill(selector, text, timeout=6000)
         if enter:
             await self._page.press(selector, "Enter")
@@ -317,24 +419,39 @@ class PlaywrightEngine(BaseEngine):
         return True
 
     async def press(self, key: str) -> bool:
+        return await self._dispatch(self._press(key))
+
+    async def _press(self, key: str) -> bool:
         await self._page.keyboard.press(key)
         return True
 
     async def scroll(self, direction: str = "down", amount: int = 600) -> bool:
+        return await self._dispatch(self._scroll(direction, amount))
+
+    async def _scroll(self, direction: str = "down", amount: int = 600) -> bool:
         delta = amount if direction == "down" else -amount
         await self._page.mouse.wheel(0, delta)
         await asyncio.sleep(0.2)
         return True
 
     async def screenshot(self, path: str, *, full_page: bool = False) -> str:
+        return await self._dispatch(self._screenshot(path, full_page=full_page))
+
+    async def _screenshot(self, path: str, *, full_page: bool = False) -> str:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         await self._page.screenshot(path=path, full_page=full_page)
         return path
 
     async def evaluate(self, expression: str) -> Any:
+        return await self._dispatch(self._evaluate(expression))
+
+    async def _evaluate(self, expression: str) -> Any:
         return await self._page.evaluate(expression)
 
     async def element_box(self, selector: str) -> Optional[Dict[str, float]]:
+        return await self._dispatch(self._element_box(selector))
+
+    async def _element_box(self, selector: str) -> Optional[Dict[str, float]]:
         script = """
         (sel) => {
           const el = document.querySelector(sel);
@@ -357,6 +474,9 @@ class PlaywrightEngine(BaseEngine):
         return dict(box) if box else None
 
     async def tabs(self) -> List[Dict[str, str]]:
+        return await self._dispatch(self._tabs())
+
+    async def _tabs(self) -> List[Dict[str, str]]:
         out = []
         for index, page in enumerate(self._context.pages):
             try:
@@ -390,6 +510,9 @@ class PlaywrightEngine(BaseEngine):
         raise HarnessError(f"no open tab matches {target!r}")
 
     async def switch_tab(self, target: Any) -> Dict[str, Any]:
+        return await self._dispatch(self._switch_tab(target))
+
+    async def _switch_tab(self, target: Any) -> Dict[str, Any]:
         page = await self._page_for(target)
         await page.bring_to_front()
         self._page = page
@@ -397,6 +520,9 @@ class PlaywrightEngine(BaseEngine):
                 "title": await page.title(), "engine": self.name}
 
     async def close_tab(self, target: Any) -> Dict[str, Any]:
+        return await self._dispatch(self._close_tab(target))
+
+    async def _close_tab(self, target: Any) -> Dict[str, Any]:
         page = await self._page_for(target)
         index = self._context.pages.index(page)
         was_current = page is self._page
@@ -407,14 +533,23 @@ class PlaywrightEngine(BaseEngine):
                 "active_url": self._page.url if self._page else "", "engine": self.name}
 
     async def back(self) -> bool:
+        return await self._dispatch(self._back())
+
+    async def _back(self) -> bool:
         await self._page.go_back()
         return True
 
     async def forward(self) -> bool:
+        return await self._dispatch(self._forward())
+
+    async def _forward(self) -> bool:
         await self._page.go_forward()
         return True
 
     async def current_url(self) -> str:
+        return await self._dispatch(self._current_url())
+
+    async def _current_url(self) -> str:
         return self._page.url if self._page else ""
 
     def capabilities(self) -> Dict[str, bool]:
@@ -422,22 +557,19 @@ class PlaywrightEngine(BaseEngine):
                 "tabs": True, "navigation": True, "stealth": True}
 
     def stop(self) -> None:
-        async def shutdown() -> None:
-            try:
-                if self._context:
-                    await self._context.close()
-                if self._browser:
-                    await self._browser.close()
-                if self._pw:
-                    await self._pw.stop()
-            except Exception:
-                pass
-
         try:
-            self._run(shutdown())
+            if self._loop is not None and self._thread is not None:
+                if self._thread.is_alive():
+                    self._run(self._shutdown(), timeout=20)
         except Exception:
             pass
+        self._pw = self._browser = self._context = self._page = None
         self.started = False
+        loop, thread = self._loop, self._thread
+        self._loop, self._thread = None, None
+        if loop is not None and thread is not None and thread.is_alive():
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=10)
 
 
 class SeleniumEngine(BaseEngine):
