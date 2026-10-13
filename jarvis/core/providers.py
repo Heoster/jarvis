@@ -251,21 +251,90 @@ def _extract_openai_tool_calls(message: Mapping[str, Any]) -> List[Dict[str, Any
             "name": fn.get("name") or raw.get("name", ""),
             "args": dict(args or {}),
         })
-    # some models emit tool calls inside content as JSON
-    if not calls:
-        content = message.get("content") or ""
-        if isinstance(content, str) and '"tool_calls"' in content:
-            try:
-                blob = json.loads(content[content.index("{"): content.rindex("}") + 1])
-                for raw in blob.get("tool_calls", []):
-                    fn = raw.get("function", raw)
-                    args = fn.get("arguments", {})
-                    if isinstance(args, str):
+    if calls:
+        return calls
+
+    # ── Content-embedded tool calls (several small models do this) ──────────
+    content = message.get("content") or ""
+    if not isinstance(content, str) or not content.strip():
+        return calls
+
+    # Pattern 1: standard {"tool_calls": [...]} wrapper
+    if '"tool_calls"' in content:
+        try:
+            start = content.index("{")
+            blob = json.loads(content[start: content.rindex("}") + 1])
+            for raw in blob.get("tool_calls", []):
+                fn = raw.get("function", raw)
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
                         args = json.loads(args)
-                    calls.append({"id": raw.get("id", "call_parsed"),
-                                  "name": fn.get("name", ""), "args": args})
-            except Exception:
-                pass
+                    except Exception:
+                        args = {"_raw": args}
+                calls.append({
+                    "id": raw.get("id", f"call_parsed_{len(calls)}"),
+                    "name": fn.get("name", ""),
+                    "args": dict(args or {}),
+                })
+            if calls:
+                return calls
+        except Exception:
+            pass
+
+    # Pattern 2: {"arguments": {...}, "name": "tool_name"} — Hermes 3 style
+    # The model emits a flat object with "name" and "arguments" keys instead of
+    # the nested function wrapper.  It may also be wrapped in {"name": "function",
+    # "type": "function", "function": {...}}.
+    if '"name"' in content and ('"arguments"' in content or '"function"' in content):
+        try:
+            start = content.index("{")
+            end = content.rindex("}") + 1
+            blob = json.loads(content[start:end])
+            # unwrap {"type":"function","function":{...}} outer shell
+            if "function" in blob and isinstance(blob["function"], Mapping):
+                blob = blob["function"]
+            name = blob.get("name", "")
+            args = blob.get("arguments", blob.get("parameters", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"_raw": args}
+            if name and name not in ("function",):
+                calls.append({
+                    "id": f"call_hermes_{int(time.time()*1000)%100000}",
+                    "name": name,
+                    "args": dict(args or {}),
+                })
+                if calls:
+                    return calls
+        except Exception:
+            pass
+
+    # Pattern 3: <tool_call>{"name":"…","arguments":{…}}</tool_call> XML tags
+    import re as _re
+    tag_match = _re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+                           content, _re.DOTALL)
+    if tag_match:
+        try:
+            blob = json.loads(tag_match.group(1))
+            args = blob.get("arguments", blob.get("parameters", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"_raw": args}
+            name = blob.get("name", "")
+            if name:
+                calls.append({
+                    "id": f"call_tag_{int(time.time()*1000)%100000}",
+                    "name": name,
+                    "args": dict(args or {}),
+                })
+        except Exception:
+            pass
+
     return calls
 
 
@@ -400,6 +469,52 @@ class BaseProvider:
 
 
 # ── Providers ───────────────────────────────────────────────────────────────
+
+def _ollama_messages(messages: Sequence[Any]) -> List[Dict[str, Any]]:
+    """Convert messages to Ollama's /api/chat wire format.
+
+    Differences from the standard OpenAI shape:
+    - ``tool_call_id`` is not accepted in tool-result messages — Ollama drops it.
+    - ``content=None`` on AI messages with tool_calls must become ``""`` not null.
+    - Tool result content containing raw JSON/markdown braces must be valid UTF-8
+      text only; Ollama's Go JSON parser is stricter than OpenAI's.
+    """
+    from .messages import ensure_messages as _em, normalise_role, _new_id
+
+    out: List[Dict[str, Any]] = []
+    for raw in messages:
+        from .messages import ensure_message
+        msg = ensure_message(raw)
+        role = normalise_role(msg.role)
+        wire_role = {"ai": "assistant", "human": "user"}.get(role, role)
+
+        if role == "tool":
+            # Ollama: tool results are plain {"role":"tool","content":"..."}
+            content = msg.content or ""
+            out.append({"role": "tool", "content": content})
+            continue
+
+        payload: Dict[str, Any] = {"role": wire_role, "content": msg.content or ""}
+
+        if msg.tool_calls and role == "ai":
+            payload["tool_calls"] = [
+                {
+                    "id": call.get("id") or _new_id(),
+                    "type": "function",
+                    "function": {
+                        "name": call.get("name"),
+                        "arguments": call.get("args") or {},
+                    },
+                }
+                for call in msg.tool_calls
+            ]
+            if not msg.content:
+                payload["content"] = ""
+
+        out.append(payload)
+    return out
+
+
 class OllamaProvider(BaseProvider):
     """Local Ollama runtime — the first choice, because it is free and offline."""
 
@@ -423,9 +538,10 @@ class OllamaProvider(BaseProvider):
     def complete(self, messages: Sequence[Any], *, tools: Optional[Sequence[Any]] = None,
                  temperature: Optional[float] = None, max_tokens: Optional[int] = None,
                  json_mode: bool = False) -> LLMResponse:
+        wire_messages = _ollama_messages(ensure_messages(messages))
         payload: Dict[str, Any] = {
             "model": self.model,
-            "messages": to_openai_messages(ensure_messages(messages)),
+            "messages": wire_messages,
             "stream": False,
             "options": {
                 "temperature": self._temperature(temperature),

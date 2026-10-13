@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "obsidian-kanban",
+  "name": "Kanban",
+  "version": "2.0.51",
+  "source": "github-release",
+  "repo": "mgmeyers/obsidian-kanban",
+  "tag": "2.0.51",
+  "urls": {
+    "manifest.json": "https://github.com/community-archive/obsidian-kanban/releases/download/2.0.51/manifest.json",
+    "main.js": "https://github.com/community-archive/obsidian-kanban/releases/download/2.0.51/main.js",
+    "styles.css": "https://github.com/community-archive/obsidian-kanban/releases/download/2.0.51/styles.css"
+  },
+  "sha256": {
+    "main.js": "a7e3bd4cf25f9b7f53a841c44ce990db0ef5f7954ebcab17ae6dca80310c39ac",
+    "manifest.json": "24976787097ead467969e014a35654e7a80e4db49a977689a48afadfa15e1854",
+    "styles.css": "ecf6dd31f1727c441cce6f54794b0d3916dcfffc87fa17b855c79ba04a85d9a7"
+  },
+  "fetched_at": "2026-10-12T13:51:46+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

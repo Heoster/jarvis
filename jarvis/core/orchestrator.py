@@ -19,6 +19,7 @@ looping 3B model cannot spin forever on a 2-core CPU.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -215,6 +216,7 @@ class Orchestrator:
 
         tool_call_log: List[Dict[str, Any]] = []
         seen_calls: Dict[str, int] = {}
+        successful_tools: set = set()  # tools that returned ok=True this turn
         deadline = time.monotonic() + self.turn_timeout
         final_text = ""
 
@@ -276,13 +278,23 @@ class Orchestrator:
                                 f" Use list_available_tools to see valid names.",
                         tool_call_id=call.get("id", ""), name=name or "unknown"))
                     continue
-                signature = f"{name}:{sorted((call.get('args') or {}).keys())}"
+                signature = f"{name}:{json.dumps(call.get('args') or {}, sort_keys=True)}"
                 seen_calls[signature] = seen_calls.get(signature, 0) + 1
-                if seen_calls[signature] > 3:
+                # also track by tool name alone so we catch variations with different args
+                name_count = seen_calls.get(name, 0) + 1
+                seen_calls[name] = name_count
+                # If this tool already succeeded this turn, don't call it again.
+                # Exception: search/crawl/browser/screen tools are legitimately
+                # called multiple times (read → verify, search → refine).
+                _re_callable = {"search", "crawl", "browser", "screen", "file"}
+                tool_obj = self.registry.get(name)
+                tool_category = getattr(tool_obj, "category", "") if tool_obj else ""
+                already_succeeded = (name in successful_tools
+                                     and tool_category not in _re_callable)
+                if already_succeeded or seen_calls[signature] > 2 or name_count > 3:
                     messages.append(ToolMessage(
-                        content=f"Error: '{name}' called with the same arguments "
-                                f"{seen_calls[signature]} times. Try a different "
-                                f"approach instead of repeating.",
+                        content=f"You already have the result for '{name}'. "
+                                f"Stop calling tools and write your final answer now.",
                         tool_call_id=call.get("id", ""), name=name))
                     continue
                 if len(tool_call_log) >= self.max_tool_calls_per_turn:
@@ -294,6 +306,13 @@ class Orchestrator:
                 calls.append(call)
 
             if not calls:
+                # All proposed calls were deduplicated — the model has the answers.
+                # Inject a final instruction and break to the summary step.
+                if tool_call_log:
+                    messages.append(HumanMessage(
+                        content="You have all the tool results you need. "
+                                "Write your final answer now. Do not call any more tools."
+                    ))
                 continue
 
             for call in calls:
@@ -309,6 +328,8 @@ class Orchestrator:
                 tool_call_log.append({"name": call["name"],
                                       "args": call.get("args") or {},
                                       "ok": tool_result.ok})
+                if tool_result.ok:
+                    successful_tools.add(call["name"])
                 preview = truncate(tool_result.content or tool_result.error, 400)
                 yield TurnEvent(
                     "tool_result",
@@ -375,11 +396,18 @@ class Orchestrator:
 
     @staticmethod
     def _is_stateful(tool_name: str) -> bool:
-        """Tools that must run sequentially (they mutate browser/window state)."""
-        return tool_name.startswith(("page_", "browse_", "cursor_", "keyboard_",
-                                     "screen_", "browser_", "mouse", "launch_")) \
-            or tool_name in ("run_bash", "run_python", "write_file", "delete_path",
-                             "move_path", "copy_path", "send_email")
+        """Tools that must run sequentially (they mutate browser/window/file/memory state)."""
+        return tool_name.startswith((
+            "page_", "browse_", "cursor_", "keyboard_",
+            "screen_", "browser_", "mouse", "launch_",
+            "obsidian_write", "obsidian_daily", "obsidian_flashcards_add",
+            "obsidian_flashcards_review", "obsidian_tasks",
+        )) or tool_name in (
+            "run_bash", "run_python", "write_file", "append_file",
+            "delete_path", "move_path", "copy_path",
+            "send_email", "send_webhook", "send_notification", "speak",
+            "remember", "forget", "download_file",
+        )
 
     # ── reporting ──────────────────────────────────────────────────────────
     def status(self) -> Dict[str, Any]:

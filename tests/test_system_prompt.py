@@ -25,12 +25,16 @@ def env(config):
 
 
 # ── environment facts ───────────────────────────────────────────────────────
-def test_environment_reports_the_live_build(env):
+def test_environment_reports_the_live_build(env, config):
     environment, registry = env
     assert environment.os and environment.python
     assert environment.tools == len(registry.names())
     assert environment.tool_categories.get("browser", 0) >= 15
-    assert environment.model == "hermes3:3b"
+    from jarvis.config import get as cfg_get
+    expected_model = cfg_get(config, "llm.model") or "llama3.2:3b"
+    assert environment.model == expected_model, (
+        f"environment.model={environment.model!r} != config model={expected_model!r}"
+    )
     assert "stub" in environment.fallback_chain       # the isolated test chain
     lines = "\n".join(environment.lines())
     assert "Machine:" in lines and "Tools:" in lines and "fallback" in lines

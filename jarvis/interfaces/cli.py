@@ -149,7 +149,7 @@ def chat(context_file: str, verbose: bool) -> None:
             say(f"could not read {context_file}: {exc}", "yellow")
 
     status = orchestrator.status()
-    say(f"tools {status['tools']['total']} · providers "
+    say(f"tools {status['tools']['tools']} · providers "
         f"{' → '.join(status['brain']['provider_chain'])} · memory "
         f"{status['memory'].get('long_term', 0)} records", "dim")
     say('Try: "open youtube and search for lofi beats" or /help.', "dim")

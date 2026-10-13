@@ -43,9 +43,9 @@ DEFAULTS: Dict[str, Any] = {
     "jarvis": {"version": "1.0.0", "name": "JARVIS", "operator": "Heoster",
                "company": "CODEEX-AI", "cost_policy": "free"},
     "llm": {
-        "provider": "auto", "model": "hermes3:3b",
+        "provider": "auto", "model": "llama3.2:3b",
         "base_url": "http://localhost:11434", "temperature": 0.3,
-        "max_tokens": 2048, "context_window": 16384, "request_timeout": 120,
+        "max_tokens": 2048, "context_window": 16384, "request_timeout": 60,
         "fallback_chain": ["ollama", "groq", "cerebras", "openrouter",
                            "gemini", "hf", "stub"],
         "provider_models": {},
@@ -115,8 +115,8 @@ DEFAULTS: Dict[str, Any] = {
     "screen": {
         "enabled": True, "vision_model": False, "screenshot_format": "png",
         "screenshot_dir": "./data/screenshots", "ocr_engine": "tesseract",
-        "ocr_enabled": True, "mouse_speed": 0.5, "move_duration_ms": 260,
-        "failsafe": True, "backend": "auto", "display": "",
+        "ocr_enabled": True, "tesseract_cmd": "", "mouse_speed": 0.5,
+        "move_duration_ms": 260, "failsafe": True, "backend": "auto", "display": "",
         "allow_click_outside_window": True,
     },
     "code": {

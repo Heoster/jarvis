@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "cm-editor-syntax-highlight-obsidian",
+  "name": "Editor Syntax Highlight",
+  "version": "0.1.3",
+  "source": "github-release",
+  "repo": "deathau/cm-editor-syntax-highlight-obsidian",
+  "tag": "0.1.3",
+  "urls": {
+    "manifest.json": "https://github.com/deathau/cm-editor-syntax-highlight-obsidian/releases/download/0.1.3/manifest.json",
+    "main.js": "https://github.com/deathau/cm-editor-syntax-highlight-obsidian/releases/download/0.1.3/main.js",
+    "styles.css": "https://github.com/deathau/cm-editor-syntax-highlight-obsidian/releases/download/0.1.3/styles.css"
+  },
+  "sha256": {
+    "main.js": "de7337c6742cfc99de79c41b5fae8ef085f0d4365c414f2b885e6a692c623f0f",
+    "manifest.json": "0aa1dcd8b3dc01bd6de0f13993916ca04c2a91dfa2619aa0efe823d7f606044a",
+    "styles.css": "3f679a410bf2a9a550212ab5cef85ea4f46b865583838f55b1282ef92564c779"
+  },
+  "fetched_at": "2026-10-12T13:51:53+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

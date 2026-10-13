@@ -91,11 +91,30 @@ def no_real_browser(monkeypatch):
         return
 
     from jarvis.tools.browser import terminal_launcher
+    from jarvis.tools.browser import harness as _harness_mod
+    from jarvis.utils import platform_probe
 
     def no_binary(browser_type: str = "chromium", binary_path: str = ""):
         return None
 
     monkeypatch.setattr(terminal_launcher, "_resolve_binary", no_binary)
+    # Block find_chrome_binary so Playwright/CDPEngine stop looking.
+    monkeypatch.setattr(platform_probe, "find_chrome_binary", lambda: None)
+    # SeleniumEngine.available() also falls back to shutil.which("chromedriver").
+    # Selenium Manager can auto-download chromedriver even when no binary is
+    # declared, so patch the availability check directly so the engine is never
+    # even attempted during offline tests.
+    monkeypatch.setattr(
+        _harness_mod.SeleniumEngine, "available",
+        lambda self: (False, "no Chrome binary (blocked by test fixture)"),
+    )
+    # CDPEngine.available() reports True when a debugger is already listening on
+    # port 9222 (a Chrome leftover from a previous test or a running browser).
+    # Block it the same way so the test suite stays hermetic.
+    monkeypatch.setattr(
+        _harness_mod.CDPEngine, "available",
+        lambda self: (False, "no Chrome debugger (blocked by test fixture)"),
+    )
 
 _TEST_CONFIG = """\
 jarvis:

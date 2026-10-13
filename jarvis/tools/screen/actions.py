@@ -166,10 +166,19 @@ def screen_click_text(text: str, monitor: int = 1, double: bool = False,
         path = capture_desktop(monitor=monitor)
     except Exception as exc:
         return failure(f"Cannot capture the screen: {exc}")
+    try:
+        from ...config import load_config as _lc
+        _scfg = _lc().get("screen") or {}
+        if not _scfg.get("ocr_enabled", True):
+            return failure("OCR is disabled in config (screen.ocr_enabled: false). "
+                           "Enable it to use screen_click_text.")
+    except Exception:
+        pass
     matches = find_text_in_image(path, text, min_confidence=min_confidence)
     if not matches:
-        return failure(f"Could not find '{text}' on screen. Run `read_screen_text` "
-                       "to see what is currently visible.")
+        return failure(f"Could not find '{text}' on screen via OCR. "
+                       "Run `read_screen_text` to see what is currently visible, "
+                       "or install tesseract-ocr if OCR is not yet available.")
     word = matches[0]
     cx, cy = word.center
     result = click_screen_point(cx, cy, clicks=2 if double else 1)

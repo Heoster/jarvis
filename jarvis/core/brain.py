@@ -37,41 +37,102 @@ __all__ = ["Brain", "ThinkingTrace", "TOOL_KEYWORDS"]
 # Category → trigger words.  Deliberately multi-lingual (Heoster mixes Hindi
 # and English) and biased toward the three focus areas.
 TOOL_KEYWORDS: Dict[str, Tuple[str, ...]] = {
-    "browser": ("open", "browse", "browser", "website", "site", "url", "link",
-                "click", "navigate", "page", "web", "youtube", "chrome", "tab",
-                "login", "form", "scroll", "download", "play", "video",
-                "khol", "kholo", "browser me"),
-    "screen": ("screen", "screenshot", "cursor", "mouse", "click", "keyboard",
-               "type", "desktop", "window", "app", "application", "focus",
-               "minimise", "minimize", "maximize", "drag", "drag-and-drop",
-               "notepad", "excel", "word", "paint", "file explorer", "volume",
-               "brightness", "screen par", "dikhao"),
-    "search": ("search", "google", "find", "lookup", "look up", "research",
-               "information", "what is", "who is", "when did", "latest", "news",
-               "price", "weather", "score", "dhundo", "kya hai", "kaun hai"),
-    "crawl": ("read", "article", "documentation", "docs", "blog", "scrape",
-              "extract", "summarise this page", "summarize this page", "wikipedia",
-              "padho", "summary"),
-    "code": ("code", "python", "script", "program", "run", "execute", "function",
-             "debug", "error", "traceback", "test", "pytest", "compile",
-             "calculate", "compute", "chal", "chalao"),
-    "file": ("file", "folder", "directory", "path", "read file", "write",
-             "save", "create", "delete", "move", "copy", "rename", "grep",
-             "list files", "repo", "project", "csv", "json", "log"),
-    "memory": ("remember", "recall", "forget", "memory", "you know about me",
-               "my name", "earlier", "last time", "yaad", "preference",
-               "what do you know", "who am i"),
-    "communication": ("email", "mail", "send", "notify", "notification",
-                      "webhook", "message", "telegram", "whatsapp", "sms"),
-    "utility": ("time", "date", "today", "calculate", "convert", "json",
-                "clipboard", "colour", "color", "image", "download", "timer"),
-    "obsidian": ("obsidian", "vault", "note", "notes", "notebook", "markdown",
-                 "flashcard", "flashcards", "revision", "revise", "study", "study plan",
-                 "syllabus", "chapter", "lecture", "exam", "homework", "assignment",
-                 "todo list", "my notes", "padhai", "likha", "likha tha"),
+    "browser": (
+        "open", "browse", "browser", "website", "site", "url", "link",
+        "click", "navigate", "page", "web", "youtube", "chrome", "tab",
+        "login", "form", "scroll", "download", "play", "video",
+        "khol", "kholo", "browser me",
+        # media tools live in the browser category
+        "song", "music", "play song", "favourite song", "media", "history",
+        "what did i play", "kya baja", "gana", "track",
+        # tab management
+        "switch tab", "close tab", "new tab", "tab switch",
+        # page ops
+        "page source", "javascript", "run js", "page js", "page find",
+        "screenshot page", "read page screenshot",
+    ),
+    "screen": (
+        "screen", "screenshot", "cursor", "mouse", "click", "keyboard",
+        "type", "desktop", "window", "app", "application", "focus",
+        "minimise", "minimize", "maximize", "drag", "drag-and-drop",
+        "notepad", "excel", "word", "paint", "file explorer", "volume",
+        "brightness", "screen par", "dikhao",
+        # OCR-specific
+        "ocr", "read screen", "screen text", "find on screen", "read what",
+        "what does screen say", "click text", "click on text",
+        # window management
+        "bring to front", "focus window", "list windows", "active window",
+        "window action", "move window", "resize window",
+        # terminal in window
+        "run in terminal", "terminal window", "visible terminal",
+    ),
+    "search": (
+        "search", "google", "find", "lookup", "look up", "research",
+        "information", "what is", "who is", "when did", "latest", "news",
+        "price", "weather", "score", "dhundo", "kya hai", "kaun hai",
+        "parallel search", "search news", "tavily", "serper", "searxng",
+        "duckduckgo",
+    ),
+    "crawl": (
+        "read", "article", "documentation", "docs", "blog", "scrape",
+        "extract", "summarise this page", "summarize this page", "wikipedia",
+        "padho", "summary", "read url", "fetch page", "jina", "firecrawl",
+        "crawl", "scrape site", "sitemap", "read many",
+    ),
+    "code": (
+        "code", "python", "script", "program", "run", "execute", "function",
+        "debug", "error", "traceback", "test", "pytest", "compile",
+        "calculate", "compute", "chal", "chalao",
+        "bash", "shell", "command", "terminal", "npm", "git", "pip",
+        "analyze", "analyse", "code outline", "find symbol", "project summary",
+        "which command", "is installed", "system info",
+    ),
+    "file": (
+        "file", "folder", "directory", "path", "read file", "write",
+        "save", "create", "delete", "move", "copy", "rename", "grep",
+        "list files", "repo", "project", "csv", "json", "log",
+        "append", "trash", "file info", "file size", "find files",
+        "search files", "directory size",
+    ),
+    "memory": (
+        "remember", "recall", "forget", "memory", "you know about me",
+        "my name", "earlier", "last time", "yaad", "preference",
+        "what do you know", "who am i", "search memory", "memory stats",
+        "store this", "keep this", "don't forget",
+    ),
+    "communication": (
+        "email", "mail", "send", "notify", "notification",
+        "webhook", "message", "telegram", "whatsapp", "sms",
+        "draft", "compose", "smtp", "http request", "api call",
+        "download file", "speak", "say", "voice", "tts", "desktop notification",
+        "discord", "slack", "ntfy", "post to",
+    ),
+    "utility": (
+        "time", "date", "today", "calculate", "convert", "json",
+        "clipboard", "colour", "color", "image", "download", "timer",
+        "percentage", "percent", "timezone", "how long", "how many days",
+        "parse json", "query json", "word count", "text stats",
+        "resize image", "convert image", "image info", "copy to clipboard",
+        "paste", "list tools", "tool help", "available tools",
+    ),
+    "obsidian": (
+        "obsidian", "vault", "note", "notes", "notebook", "markdown",
+        "flashcard", "flashcards", "revision", "revise", "study", "study plan",
+        "syllabus", "chapter", "lecture", "exam", "homework", "assignment",
+        "todo list", "my notes", "padhai", "likha", "likha tha",
+        "daily note", "tasks", "due cards", "weak topics", "study brief",
+        "obsidian plugin", "study kit", "backlinks", "links",
+        "obsidian search", "write note", "list notes", "read note",
+        "exams", "revision queue",
+    ),
 }
 
 _ALWAYS_ON = ("utility", "memory")
+
+# Tools that must always be available regardless of topic — they are how the
+# model discovers what else it can call and corrects its own mistakes.
+_ALWAYS_INCLUDE = ("list_available_tools", "tool_help", "recall",
+                   "get_current_datetime", "calculate")
 
 
 @dataclass
@@ -152,7 +213,7 @@ class Brain:
 
     def select_relevant_tools(self, message: str,
                               tools: Optional[Sequence[Any]] = None,
-                              *, max_tools: int = 9) -> List[Any]:
+                              *, max_tools: int = 14) -> List[Any]:
         """Bind 5–9 tools instead of everything (≈2 000 tokens saved per turn).
 
         Scoring has three parts: the category score from :meth:`categories_for`,
@@ -200,14 +261,14 @@ class Brain:
         picked: List[Any] = []
         used_categories: Dict[str, int] = {}
 
-        # pass 1 — guarantee representation for each matched category (top 2 each)
+        # pass 1 — guarantee representation for each matched category (top 3 each)
         for _value, tool in scored:
             if len(picked) >= max_tools:
                 break
             category = getattr(tool, "category", "utility")
             if category_score.get(category, 0) <= 0:
                 continue
-            if used_categories.get(category, 0) >= 2:
+            if used_categories.get(category, 0) >= 3:
                 continue
             if tool not in picked:
                 picked.append(tool)
@@ -220,12 +281,11 @@ class Brain:
             if tool not in picked:
                 picked.append(tool)
 
-        # discovery tool is cheap insurance against a wrong guess here
-        if len(picked) < max_tools:
-            for tool in pool:
-                if getattr(tool, "name", "") == "list_available_tools" and tool not in picked:
-                    picked.append(tool)
-                    break
+        # always include the discovery + core tools so the model can self-correct
+        tool_map = {getattr(t, "name", ""): t for t in pool}
+        for must_have in _ALWAYS_INCLUDE:
+            if must_have in tool_map and tool_map[must_have] not in picked:
+                picked.append(tool_map[must_have])
 
         if not picked:
             picked = pool[:max_tools]
