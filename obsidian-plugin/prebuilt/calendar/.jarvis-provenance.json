@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "calendar-beta",
+  "name": "Calendar (Beta)",
+  "version": "2.0.0",
+  "source": "github-release",
+  "repo": "liamcain/obsidian-calendar-plugin",
+  "tag": "2.0.0-beta.2",
+  "urls": {
+    "manifest.json": "https://github.com/liamcain/obsidian-calendar-plugin/releases/download/2.0.0-beta.2/manifest.json",
+    "main.js": "https://github.com/liamcain/obsidian-calendar-plugin/releases/download/2.0.0-beta.2/main.js",
+    "styles.css": "https://github.com/liamcain/obsidian-calendar-plugin/releases/download/2.0.0-beta.2/styles.css"
+  },
+  "sha256": {
+    "main.js": "64d1c6c620803246724bc922c5c2e0a17c406ffc23f6bbcfbfb14c643958fbb7",
+    "manifest.json": "314fc17929a2270b17ea392538ee2d93330714800e244b2975b6c19f9b8dc689",
+    "styles.css": "486b450076f3439b9e40853665a3f51e5084caba60b882c285b60f4764c20852"
+  },
+  "fetched_at": "2026-10-12T13:51:13+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

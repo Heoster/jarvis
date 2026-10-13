@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "obsidian-git",
+  "name": "Git",
+  "version": "2.41.1",
+  "source": "github-release",
+  "repo": "Vinzent03/obsidian-git",
+  "tag": "2.41.1",
+  "urls": {
+    "manifest.json": "https://github.com/Vinzent03/obsidian-git/releases/download/2.41.1/manifest.json",
+    "main.js": "https://github.com/Vinzent03/obsidian-git/releases/download/2.41.1/main.js",
+    "styles.css": "https://github.com/Vinzent03/obsidian-git/releases/download/2.41.1/styles.css"
+  },
+  "sha256": {
+    "main.js": "28a18afcab1d2f152a0d3c89aff38e2a97ad0be1aeaaf99630613233bbec6c1b",
+    "manifest.json": "5d4d0f411518636c1d2a4831425a8e3487b925b5bd413be0ca22e6de38a593f7",
+    "styles.css": "bfa8fbd45fe49ff340fdb196b84badd631aede5d6f96740f336ea779cd441005"
+  },
+  "fetched_at": "2026-10-12T13:51:36+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

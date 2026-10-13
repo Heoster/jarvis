@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "dataview",
+  "name": "Dataview",
+  "version": "0.5.68",
+  "source": "github-release",
+  "repo": "blacksmithgu/obsidian-dataview",
+  "tag": "0.5.70",
+  "urls": {
+    "manifest.json": "https://github.com/blacksmithgu/obsidian-dataview/releases/download/0.5.70/manifest.json",
+    "main.js": "https://github.com/blacksmithgu/obsidian-dataview/releases/download/0.5.70/main.js",
+    "styles.css": "https://github.com/blacksmithgu/obsidian-dataview/releases/download/0.5.70/styles.css"
+  },
+  "sha256": {
+    "main.js": "6bb1cf7010afad830e73575fca0e2bfbd3279c562e3d9d24f2d2f45161eb7d00",
+    "manifest.json": "9235db47112da81b85591c79ecb9ae2574e5e72207056e976472f90616286185",
+    "styles.css": "3306dd9032e00f989ba7233a37fd255bc4d3f4340cee661762e952f3f6aa1de9"
+  },
+  "fetched_at": "2026-10-12T13:50:43+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

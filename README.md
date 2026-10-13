@@ -168,16 +168,50 @@ $ python -m jarvis api --verify
 
 Requires **Python 3.10+** and ~200 MB of disk. Works on Windows, Linux and macOS; a 2-core / 4 GB machine is enough.
 
+### One command
+
 ```bash
 git clone https://github.com/Heoster/jarvis.git
 cd jarvis
+python jarvis-setup.py            # that's it — same command on every platform
+```
 
-# one-shot: venv + core deps + focus-area extras + browser + optional model
+The launcher picks the native installer for your machine (`scripts/jarvis-setup.ps1` on Windows, `scripts/jarvis-setup.sh` on Linux and macOS) and passes your flags through. Either installer also runs on its own:
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File scripts\jarvis-setup.ps1
+```
+
+```bash
+# Linux / macOS
 bash scripts/jarvis-setup.sh
+```
 
-# or manually
+Ten steps, in order: interpreter check → virtualenv → core install (`pip install -e .`, so `jarvis` lands on PATH) → focus-area extras (screen, browser, reading) → Playwright's Chromium → OS-level tools (Tesseract OCR, and on Linux `xdotool` / `wmctrl` / `scrot`) → optional local model → `.env` → **verification** → `jarvis doctor`.
+
+The verification step is what makes it "installed" rather than "hopeful": it runs the test suite, the same `ruff` gate CI enforces, and a wheel build, so a broken install tells you so immediately.
+
+Nothing is fatal except the core install. Anything optional that fails becomes a warning, and the run ends with a list of what to look at.
+
+| Flag | Effect |
+| --- | --- |
+| `--python PATH` | interpreter to build the venv from |
+| `--skip-browser` | skip the Chromium download (~150 MB) |
+| `--skip-tests` | skip the verification stage |
+| `--skip-system` | never touch the OS package manager; report only |
+| `--model` | also `ollama pull hermes3:3b` (~2 GB) |
+| `--web` | also the FastAPI + Gradio web UI extras |
+| `--no-dev` | skip pytest / ruff / build |
+| `--yes` | don't prompt before installing OS packages |
+
+On Windows the equivalents are `-Python`, `-SkipBrowser`, `-SkipTests`, `-SkipSystem`, `-Model`, `-Web`, `-NoDev`, `-Yes`.
+
+### Or manually
+
+```bash
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .
 pip install playwright selenium websockets mss Pillow pytesseract trafilatura beautifulsoup4
 playwright install chromium
 ```
@@ -188,7 +222,7 @@ Then check the machine and doctor the install:
 python -m jarvis doctor          # hardware, screen, browser, memory, API, crawl
 ```
 
-Nothing above is mandatory beyond the core three (`pyyaml`, `httpx`, `rich`, `click`). Every optional piece degrades to a clear message instead of a crash.
+Nothing above is mandatory beyond the core four (`pyyaml`, `httpx`, `rich`, `click`). Every optional piece degrades to a clear message instead of a crash.
 
 Headless server? Give it a virtual display:
 

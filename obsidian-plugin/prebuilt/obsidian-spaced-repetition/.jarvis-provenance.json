@@ -1,0 +1,21 @@
+{
+  "installed_by": "jarvis",
+  "plugin_id": "obsidian-spaced-repetition",
+  "name": "Spaced Repetition",
+  "version": "1.15.4",
+  "source": "github-release",
+  "repo": "st3v3nmw/obsidian-spaced-repetition",
+  "tag": "1.15.4",
+  "urls": {
+    "manifest.json": "https://github.com/st3v3nmw/obsidian-spaced-repetition/releases/download/1.15.4/manifest.json",
+    "main.js": "https://github.com/st3v3nmw/obsidian-spaced-repetition/releases/download/1.15.4/main.js",
+    "styles.css": "https://github.com/st3v3nmw/obsidian-spaced-repetition/releases/download/1.15.4/styles.css"
+  },
+  "sha256": {
+    "main.js": "e2af1a3477ad54bf063ee8787a465661cf6725d88394e9f2f15e78e0bc29993b",
+    "manifest.json": "6b4bf78256cd0ef8816fa2cf4f00248c01b18066f8e69fee969d48a3791bcd65",
+    "styles.css": "c62ae5fab547d74d8446e05aa20cb55efebbfa7cd0e0743c951dcc2b77b49abd"
+  },
+  "fetched_at": "2026-10-12T13:50:58+00:00",
+  "licence": "free/open-source community plugin \u2014 see the repository"
+}

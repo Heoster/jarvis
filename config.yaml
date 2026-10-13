@@ -45,7 +45,7 @@ llm:
   fallback_chain: ["ollama", "groq", "gemini", "openrouter", "hf"]
   # Provider-specific models used when the primary chain member is selected.
   provider_models:
-    ollama: "hermes3:3b"
+    ollama: "llama3.2:3b"           # proper tool-calling; switch to qwen2.5:7b-instruct for better quality
     groq: "llama-3.3-70b-versatile"
     openrouter: "openrouter/free"           # OpenRouter's free-model router
     gemini: "gemini-3.5-flash-lite"         # 2.0-flash(-lite) was shut down 2026-06-01
@@ -200,6 +200,7 @@ screen:
   screenshot_dir: "./data/screenshots"
   ocr_engine: "tesseract"          # tesseract | easyocr | none
   ocr_enabled: true
+  tesseract_cmd: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"  # explicit path, avoids PATH issues
   mouse_speed: 0.5
   move_duration_ms: 260
   failsafe: true                   # slam cursor into a corner to abort
