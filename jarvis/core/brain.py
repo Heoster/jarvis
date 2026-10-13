@@ -129,6 +129,18 @@ TOOL_KEYWORDS: Dict[str, Tuple[str, ...]] = {
 
 _ALWAYS_ON = ("utility", "memory")
 
+_KEYWORD_RES: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _keyword_hit(word: str, lowered: str) -> bool:
+    """Whole-word match with an optional suffix (``open`` → ``opened``, ``tab`` → ``tabs``)."""
+    pattern = _KEYWORD_RES.get(word)
+    if pattern is None:
+        pattern = re.compile(r"(?<![a-z0-9])" + re.escape(word)
+                             + r"(?:s|es|ed|d|ing|er|ers)?(?![a-z0-9])")
+        _KEYWORD_RES[word] = pattern
+    return pattern.search(lowered) is not None
+
 
 
 @dataclass

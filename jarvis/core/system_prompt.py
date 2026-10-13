@@ -156,16 +156,16 @@ PLAYBOOKS: Dict[str, List[str]] = {
 }
 
 PLAYBOOK_INDEX: Dict[str, str] = {
-    "browser": "browser_launch -> one job per tab (browse_open new_tab=true) -> prefer "
-               "URL injection over typing -> page_click/page_type -> verify with "
-               "page_read/page_find/page_js -> switch with page_tab_switch",
-    "media": "media_play(query=...) resolves favourites/history, opens best YouTube "
-             "match in a new tab, verifies playback (paused/currentTime/duration) "
-             "and remembers the play; media_history(day=...) for history",
-    "screen": "no vision model: read_screen_text (OCR) + real cursor; "
-              "screen_click_text -> read_screen_text to confirm; "
-              "screen_list_windows -> screen_focus_window for native apps; "
-              "screenshot_and_read for PDF/canvas pages",
+    "browser": "only when asked to open/visit a site → browser_status (reuse an open "
+               "window) → browse_open (new_tab=true for a second page) → prefer URL "
+               "injection over typing → page_click/page_type → verify with "
+               "page_read/page_find/page_js",
+    "media": "media_play(query=…) resolves favourites/history, injects the YouTube "
+             "search URL, scores the results, verifies playback (paused/currentTime) "
+             "and remembers the play; media_history(day=\"yesterday\") answers "
+             "\"what did I play yesterday?\"",
+    "screen": "no vision model: OCR text + real cursor (screen_click_text → "
+              "screen_read_text to confirm)",
     "memory": "recall/search_memory before asking; remember stated preferences, "
               "deadlines and decisions; memory_stats for totals; forget(id) to remove",
     "study": "obsidian tools for notes, flashcards, revision (obsidian_study_brief, "

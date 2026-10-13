@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -325,7 +326,7 @@ class Orchestrator:
                                 f" Use list_available_tools to see valid names.",
                         tool_call_id=call.get("id", ""), name=name or "unknown"))
                     continue
-                signature = f"{name}:{json.dumps(call.get('args') or {}, sort_keys=True)}"
+                signature = f"{name}:{json.dumps(call.get('args') or {}, sort_keys=True, default=str)}"
                 seen_calls[signature] = seen_calls.get(signature, 0) + 1
                 # also track by tool name alone so we catch variations with different args
                 name_count = seen_calls.get(name, 0) + 1

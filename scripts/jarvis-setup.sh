@@ -320,9 +320,8 @@ cat <<'MSG'
 
 Next steps:
 
-   source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
-   python -m jarvis                 # start chatting
-   python -m jarvis doctor          # re-check capabilities any time
+   # or use a free cloud key instead of Ollama (add to .env):
+   #   GROQ_API_KEY=...  GEMINI_API_KEY=...  OPENROUTER_API_KEY=...
 
 Free API keys go in .env — every one is optional, and the chain always ends
 in a stub so a reply is always produced.
