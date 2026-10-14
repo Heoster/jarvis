@@ -168,7 +168,7 @@ async def page_back() -> str:
 
 @tool(category="browser", timeout=30)
 async def page_forward() -> str:
-    """Go forward in the browser history."""
+    """Go forward one page in the browser history (back's opposite, same tab)."""
     try:
         result = await _harness().forward()
     except HarnessError as exc:

@@ -4,6 +4,8 @@
     python -m jarvis ask "..."            one-shot question
     python -m jarvis doctor               environment + capability report
     python -m jarvis tools [category]     list tools
+    python -m jarvis tools --smoke        self-test the tool layer, no model
+    python -m jarvis call TOOL '{json}'   run one tool directly
     python -m jarvis api --verify         provider health / fallback check
     python -m jarvis browser --verify     Chrome harness + engine fallback test
     python -m jarvis screen               desktop capability report
@@ -269,12 +271,35 @@ def doctor() -> None:
 
 @main.command()
 @click.argument("category", required=False)
-def tools(category: Optional[str]) -> None:
-    """List tools, optionally filtered by category."""
+@click.option("--smoke", is_flag=True,
+              help="Self-test the tool layer without a model: contract checks + "
+                   "safe probes. No provider is contacted.")
+@click.option("--strict", is_flag=True, help="Also fail on contract warnings.")
+@click.option("--verbose", is_flag=True, help="List every probe, not just the failures.")
+def tools(category: Optional[str], smoke: bool, strict: bool, verbose: bool) -> None:
+    """List tools, optionally filtered by category.
+
+    \b
+    Examples:
+      python -m jarvis tools                  list every tool
+      python -m jarvis tools browser          list one category
+      python -m jarvis tools --smoke          self-test the tool layer, no LLM
+    """
     cfg = load_config()
     from ..tools import build_registry
 
     registry = build_registry(cfg)
+    if smoke:
+        from ..tools.selftest import run_smoke
+
+        report = run_smoke(registry, config=cfg)
+        say(report.text(verbose=verbose))
+        failed = bool(report.errors) or bool(report.failed_probes)
+        if report.warnings and strict:
+            say(f"strict: {len(report.warnings)} contract warning(s) treated as failure",
+                "yellow")
+            failed = True
+        raise SystemExit(1 if failed else 0)
     entries = registry.get_by_category(category) if category else registry.get_all_tools()
     if not entries:
         say(f"No tools in '{category}'. Categories: {', '.join(registry.categories())}",

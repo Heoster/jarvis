@@ -86,6 +86,8 @@ PLAYBOOKS: Dict[str, List[str]] = {
         "Verification is part of the job: the tool reports `paused`, `currentTime` and "
         "`duration`. If it says *paused (autoplay was blocked)*, press play or tell "
         "the operator — do not claim it is playing.",
+        "If `media_play` says *no video results*, change the query or pass `url=` — "
+        "it already tried the page, HTTP and Jina.",
         "Typed search is the fallback: `page_click` the search box → `page_type` → "
         "`page_press(\"Enter\")` → read results → click the title.",
     ],

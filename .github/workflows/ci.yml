@@ -114,6 +114,7 @@ jobs:
         run: |
           python -m jarvis doctor
           python -m jarvis tools | head -30
+          python -m jarvis tools --smoke
           python -m jarvis agents
           python -m jarvis prompt --budget 3000 --out "$RUNNER_TEMP/prompt.txt"
           python -m jarvis call media_history '{"day":"yesterday"}'

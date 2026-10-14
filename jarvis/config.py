@@ -112,6 +112,11 @@ DEFAULTS: Dict[str, Any] = {
                 "annotate_index": True},
         "hybrid": {"enabled": True, "coordinate_source": "dom",
                    "click_settle_ms": 350, "move_duration_ms": 260, "jitter": True},
+        # media_play: how long to wait for the results page, and what to try
+        # when the browser cannot read it (both readers are free, no keys).
+        "media": {"history_file": "./data/media_history.json",
+                  "results_wait_seconds": 6.0, "results_fallback": True,
+                  "results_readers": ["http", "reader"]},
     },
     "screen": {
         "enabled": True, "vision_model": False, "screenshot_format": "png",

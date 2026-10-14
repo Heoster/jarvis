@@ -7,6 +7,11 @@ The pipeline is fixed in code, so a small model only has to pass the song name:
 3. take the first link, in search-rank order, that is a real video on a trusted host;
 4. open that video in Chrome with ``browse_open`` and report exactly what was opened.
 
+Jina is the first choice because it always works from behind a proxy, but it is
+rate limited on the free tier (HTTP 429), so if it fails JARVIS reads the very
+same results page directly and parses YouTube's ``ytInitialData`` — the pick is
+then scored the way ``media_play`` scores it, instead of "first link wins".
+
 It never claims the song is playing: it reports the URL it opened. Use
 ``media_play`` when you need the player state checked.
 """
@@ -91,26 +96,44 @@ async def play_song(query: str, new_tab: bool = True) -> str:
         query: Song, artist or video name to search for
         new_tab: Open the video in a new tab (default true)
     """
+    from .media import choose_candidate
+    from .youtube_results import search as network_search
+
     query = (query or "").strip()
     if not query:
         return failure("play_song needs a song or video name in `query`.")
     search_url = youtube_search_url(query)
+    via = f"Jina Reader ({search_url})"
+    picked: Optional[Tuple[str, str]] = None
     try:
         results_text = await asyncio.to_thread(jina_read, search_url, max_chars=60000)
     except CrawlError as exc:
-        return failure(f"Jina could not fetch the results for “{query}”: {exc}. "
-                       f"Open {search_url} with browse_open instead.")
-    picked = pick_first_trusted(results_text)
+        # Jina is rate limited on the free tier: read the same page ourselves
+        # (ytInitialData is server-rendered, so a plain GET is enough).
+        entries, source, why = await asyncio.to_thread(
+            network_search, query, limit=25, readers=("http",))
+        if not entries:
+            return failure(f"Jina could not fetch the results for “{query}”: {exc}; "
+                           f"the direct reader failed too ({why}). "
+                           f"Open {search_url} with browse_open instead.")
+        best = choose_candidate(entries, query) or entries[0]
+        picked = (str(best.get("title") or best.get("id") or ""),
+                  str(best.get("href") or ""))
+        via = f"YouTube's own results data ({source})"
+    if picked is None:
+        picked = pick_first_trusted(results_text)
     if picked is None:
         return failure(f"Jina fetched the results for “{query}” but found no trusted video "
                        "link. Try a more specific name, or browse_open the search page.")
     title, url = picked
+    if not url:
+        return failure(f"the results for “{query}” had no playable video link.")
     opened = await browse_open.func(url=url, new_tab=new_tab, read_page=True)
     if isinstance(opened, tuple):  # `failure` helper result
         return failure(f"found “{title}” at {url} but could not open it: {opened[1]}")
     return (f"🎯 First trusted result for “{query}”: {title}\n"
             f"🔗 {url}\n"
-            f"(search read via Jina: {search_url})\n\n{opened}")
+            f"(search read via {via})\n\n{opened}")
 
 
 PLAY_TOOLS = [play_song]
