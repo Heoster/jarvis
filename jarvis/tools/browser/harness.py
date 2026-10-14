@@ -262,7 +262,6 @@ class PlaywrightEngine(BaseEngine):
         binary = cfg.get("binary_path") or find_chrome_binary()
         args = [
             "--no-sandbox", "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
         ]
         if binary and with_debug_port:
             args.append("--remote-debugging-port=" +
@@ -603,7 +602,6 @@ class SeleniumEngine(BaseEngine):
         options.add_argument(f"--window-size={int(window.get('width', 1440))},"
                              f"{int(window.get('height', 900))}")
         if self.cfg.get("stealth", True):
-            options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option("useAutomationExtension", False)
         if self.cfg.get("user_data_dir"):
