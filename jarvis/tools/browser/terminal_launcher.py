@@ -33,7 +33,7 @@ from ...utils.platform_probe import find_chrome_binary, find_firefox_binary, pro
 log = get_logger("browser.launch")
 
 __all__ = ["ChromeProcess", "launch_chrome", "wait_for_port", "port_free",
-           "run_in_terminal", "pick_free_port", "STEALTH_ARGS"]
+           "run_in_terminal", "pick_free_port", "port_in_use_by_chrome", "STEALTH_ARGS"]
 
 
 # Flags that make a scripted Chrome behave like a normal one and stop the
@@ -41,8 +41,10 @@ __all__ = ["ChromeProcess", "launch_chrome", "wait_for_port", "port_free",
 STEALTH_ARGS: List[str] = [
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-blink-features=AutomationControlled",
-    "--disable-features=IsolateOrigins,site-per-process,AutomationControlled",
+    # NOTE: "--disable-blink-features=AutomationControlled" is NOT a supported
+    # Chrome flag (Chrome shows an "unsupported command-line flag" warning), so
+    # it is intentionally not passed.
+    "--disable-features=IsolateOrigins,site-per-process",
     "--disable-infobars",
     "--disable-dev-shm-usage",
     "--disable-popup-blocking",
@@ -69,6 +71,19 @@ def pick_free_port(start: int = 9222, attempts: int = 40) -> int:
         if port_free(port):
             return port
     return start
+
+
+def port_in_use_by_chrome(port: int, host: str = "127.0.0.1") -> bool:
+    """True if a Chrome DevTools endpoint is already answering on ``port``."""
+    if port_free(port, host):
+        return False
+    import httpx
+
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            return client.get(f"http://{host}:{port}/json/version").status_code == 200
+    except Exception:
+        return False
 
 
 def wait_for_port(port: int, *, timeout: float = 15.0, host: str = "127.0.0.1") -> bool:
@@ -198,6 +213,19 @@ def launch_chrome(url: str = "", *, browser_type: str = "chromium",
             "`playwright install chromium`, or set JARVIS_CHROME_PATH.")
 
     port = port or pick_free_port(9222)
+
+    # Reuse a Chrome that already answers on this CDP port instead of spawning
+    # another one (a second launch would just hand off to the existing window
+    # and leave us with duplicate processes/tabs).
+    if port_in_use_by_chrome(port):
+        log.info(f"chrome already running on port {port}; reusing it")
+        instance = ChromeProcess(pid=0, port=port, binary=binary,
+                                 user_data_dir=user_data_dir, headless=headless,
+                                 url=url, process=None, log_path="")
+        if url:
+            instance.open_tab(url)
+        return instance
+
     if user_data_dir:
         profile_dir = str(Path(user_data_dir).expanduser())
     else:
